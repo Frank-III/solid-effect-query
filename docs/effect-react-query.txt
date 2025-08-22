@@ -1,0 +1,741 @@
+Directory Structure:
+
+└── ./
+    ├── packages
+    │   └── effect-react-query
+    │       └── src
+    │           ├── hooks.ts
+    │           └── index.tsx
+    └── tooling
+        └── eslint-config
+            ├── base.js
+            ├── nextjs.js
+            └── react.js
+
+
+
+---
+File: /packages/effect-react-query/src/hooks.ts
+---
+
+import type {
+  MutateOptions,
+  QueryFunctionContext,
+  QueryKey,
+  SkipToken,
+  UseMutationOptions,
+  UseMutationResult,
+  UseQueryOptions,
+  UseQueryResult,
+} from "@tanstack/react-query";
+import { skipToken, useMutation, useQuery } from "@tanstack/react-query";
+import type { ManagedRuntime } from "effect";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Either from "effect/Either";
+import * as Exit from "effect/Exit";
+import * as Runtime from "effect/Runtime";
+
+// Todo: useSuspenseQuery and queryOptions
+
+type Override<TTargetA, TTargetB> = {
+  [AKey in keyof TTargetA]: AKey extends keyof TTargetB
+    ? TTargetB[AKey]
+    : TTargetA[AKey];
+};
+
+export function makeUseEffectQuery<
+  R,
+  MR extends ManagedRuntime.ManagedRuntime<R, any>,
+>(useEffectRuntime: () => MR) {
+  return function useEffectQuery<
+    TData,
+    TError,
+    ThrowOnDefect extends boolean = false,
+    TExposedError = ThrowOnDefect extends true ? TError : Cause.Cause<TError>,
+    TQueryKey extends QueryKey = QueryKey,
+  >(
+    options: {
+      throwOnDefect?: ThrowOnDefect;
+    } & Override<
+      UseQueryOptions<TData, TExposedError, TData, TQueryKey>,
+      {
+        queryFn?:
+          | ((
+              context: QueryFunctionContext<TQueryKey, never>,
+            ) => Effect.Effect<TData, TError, ClientServices>)
+          | SkipToken;
+      }
+    >,
+  ): UseQueryResult<TData, TExposedError> {
+    const throwOnDefect = options.throwOnDefect ?? false;
+
+    const runtime = useEffectRuntime();
+    const runPromiseExit = Runtime.runPromiseExit(runtime);
+    const queryFn = options.queryFn;
+    const throwOnError = options.throwOnError;
+
+    const baseResults = useQuery({
+      ...options,
+      ...(typeof queryFn === "function"
+        ? {
+            queryFn: async (args) => {
+              let queryEffect: Effect.Effect<TData, TError, ClientServices>;
+              try {
+                queryEffect = queryFn(args);
+              } catch (e) {
+                throw new Cause.UnknownException(e, "queryFn threw");
+              }
+
+              if (queryEffect === skipToken) {
+                return queryEffect;
+              }
+
+              const effecToRun = queryEffect.pipe(
+                Effect.withSpan("useEffectQuery", {
+                  attributes: {
+                    queryKey: args.queryKey,
+                    queryFn: queryFn.toString(),
+                  },
+                }),
+              );
+              const result = await runPromiseExit(effecToRun, {
+                signal: args.signal,
+              });
+              if (Exit.isFailure(result)) {
+                // we always throw the cause
+                throw result.cause;
+              } else {
+                return result.value;
+              }
+            },
+          }
+        : {}),
+      ...(typeof throwOnError === "function"
+        ? {
+            throwOnError: (error, query) => {
+              // this is safe because internally when we call useQuery we always throw the full cause or UnknownException
+              const cause = error as
+                | Cause.Cause<TError>
+                | Cause.UnknownException;
+
+              // if the cause is UnknownException, we always return true and throw it
+              if (Cause.isUnknownException(cause)) {
+                return true;
+              }
+              const failureOrCause = Cause.failureOrCause(cause);
+
+              if (throwOnDefect) {
+                // in this case options.throwOnError expects a TError
+
+                // the cause was a fail, so we have TError
+                if (Either.isLeft(failureOrCause)) {
+                  // this is safe because if throwOnDefect is true then TExposedError is TError
+                  const exposedError =
+                    failureOrCause.left as unknown as TExposedError;
+                  return throwOnError(exposedError, query);
+                } else {
+                  // the cause was a die or interrupt, so we return true
+                  return true;
+                }
+              } else {
+                // in this case options.throwOnError expects a Cause<TError>
+                // this is safe because if throwOnDefect is false then TExposedError is Cause<TError>
+                const exposedError = cause as unknown as TExposedError;
+                return throwOnError(exposedError, query);
+              }
+            },
+          }
+        : {}),
+    });
+
+    //  the results from react query all have getters which trigger fine grained tracking, we need to replicate this when we wrap the results
+    const resultsProxy = new Proxy(baseResults, {
+      get: (target, prop, receiver) => {
+        if (prop === "error") {
+          return target.error
+            ? throwOnDefect
+              ? Either.match(
+                  Cause.failureOrCause(
+                    target.error as unknown as Cause.Cause<TError>, // this is safe because we always throw the full cause and we know that error is not null
+                  ),
+                  {
+                    onLeft: (error) => error as unknown as TExposedError, // if throwOnDefect is true then TExposedError is TError
+                    onRight: (_cause) => {
+                      throw new Error(
+                        "non fail cause with throwOnDefect: true should have thrown already",
+                      );
+                    },
+                  },
+                )
+              : target.error // if throwOnDefect is false then TExposedError is Cause<TError>, and base error is always Cause<TError>
+            : null;
+        } else if (prop === "failureReason") {
+          return target.failureReason
+            ? throwOnDefect
+              ? Either.match(
+                  Cause.failureOrCause(
+                    target.failureReason as unknown as Cause.Cause<TError>, // this is safe because we always throw the full cause and we know that error is not null
+                  ),
+                  {
+                    onLeft: (error) => error as unknown as TExposedError, // if throwOnDefect is true then TExposedError is TError
+                    onRight: (_cause) => {
+                      throw new Error(
+                        "non fail cause with throwOnDefect: true should have thrown already",
+                      );
+                    },
+                  },
+                )
+              : target.failureReason // if throwOnDefect is false then TExposedError is Cause<TError>, and base error is always Cause<TError>
+            : null;
+        }
+
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    return resultsProxy as UseQueryResult<TData, TExposedError>;
+    // this is safe because we are only doing very light remapping
+    // it gets mad when you touch error because it is either TError or null depending on other properities, but we honor those cases
+  };
+}
+
+export function makeUseEffectMutation<
+  R,
+  MR extends ManagedRuntime.ManagedRuntime<R, any>,
+>(useEffectRuntime: () => MR) {
+  return function useEffectMutation<
+    TData,
+    TError,
+    ThrowOnDefect extends boolean = false,
+    TExposedError = ThrowOnDefect extends true ? TError : Cause.Cause<TError>,
+    TVariables = void,
+    TContext = unknown,
+  >(
+    options: {
+      throwOnDefect?: ThrowOnDefect;
+    } & Override<
+      Omit<
+        UseMutationOptions<TData, TExposedError, TVariables, TContext>,
+        "retry" | "retryDelay"
+      >,
+      {
+        mutationFn?: (
+          variables: TVariables,
+        ) => Effect.Effect<TData, TError, ClientServices>;
+        onMutate?: (
+          variables: TVariables,
+        ) => Effect.Effect<TContext, unknown, ClientServices>;
+        onSuccess?: (
+          data: TData,
+          variables: TVariables,
+          context: TContext,
+        ) => Effect.Effect<unknown, unknown, ClientServices>;
+        onError?: (
+          error: TExposedError,
+          variables: TVariables,
+          context: TContext | undefined,
+        ) => Effect.Effect<unknown, unknown, ClientServices>;
+        onSettled?: (
+          data: TData | undefined,
+          error: TExposedError | null,
+          variables: TVariables,
+          context: TContext | undefined,
+        ) => Effect.Effect<unknown, unknown, ClientServices>;
+      }
+    >,
+  ): Override<
+    UseMutationResult<TData, TExposedError, TVariables, TContext>,
+    {
+      mutateAsync: (
+        variables: TVariables,
+        options?: MutateOptions<
+          TData,
+          Cause.Cause<TError>,
+          TVariables,
+          TContext
+        >,
+      ) => Promise<Exit.Exit<TData, TError>>;
+      mutate: (
+        variables: TVariables,
+        options?: MutateOptions<
+          TData,
+          Cause.Cause<TError>,
+          TVariables,
+          TContext
+        >,
+      ) => void;
+    }
+  > {
+    const mutationFn = options.mutationFn;
+    const throwOnDefect = options.throwOnDefect ?? false;
+    const throwOnError = options.throwOnError;
+    const onMutate = options.onMutate;
+    const onSuccess = options.onSuccess;
+    const onError = options.onError;
+    const onSettled = options.onSettled;
+
+    const runtime = useEffectRuntime();
+    const runPromiseExit = Runtime.runPromiseExit(runtime);
+    const runPromise = Runtime.runPromise(runtime);
+
+    const baseResults = useMutation({
+      ...options,
+      mutationFn:
+        typeof mutationFn === "function"
+          ? async (variables: TVariables) => {
+              let mutationEffect: Effect.Effect<TData, TError, ClientServices>;
+              try {
+                mutationEffect = mutationFn(variables);
+              } catch (e) {
+                throw new Cause.UnknownException(e, "mutationFn threw");
+              }
+              const effectToRun = mutationEffect.pipe(
+                Effect.withSpan("useEffectMutation", {
+                  attributes: {
+                    mutationFn: mutationFn.toString(),
+                  },
+                }),
+              );
+              const result = await runPromiseExit(effectToRun);
+              if (Exit.isFailure(result)) {
+                // we always throw the cause
+                throw result.cause;
+              } else {
+                return result.value;
+              }
+            }
+          : mutationFn,
+      throwOnError:
+        typeof throwOnError === "function"
+          ? (error: Cause.Cause<TError>) => {
+              // this is safe because internally when we call useQuery we always throw the full cause or UnknownException
+              const cause = error as
+                | Cause.Cause<TError>
+                | Cause.UnknownException;
+
+              // if the cause is UnknownException, we always return true and throw it
+              if (Cause.isUnknownException(cause)) {
+                return true;
+              }
+
+              const failureOrCause = Cause.failureOrCause(cause);
+
+              if (throwOnDefect) {
+                // in this case options.throwOnError expects a TError
+
+                // the cause was a fail, so we have TError
+                if (Either.isLeft(failureOrCause)) {
+                  // this is safe because if throwOnDefect is true then TExposedError is TError
+                  const exposedError =
+                    failureOrCause.left as unknown as TExposedError;
+                  return throwOnError(exposedError);
+                } else {
+                  // the cause was a die or interrupt, so we return true
+                  return true;
+                }
+              } else {
+                // in this case options.throwOnError expects a Cause<TError>
+                // this is safe because if throwOnDefect is false then TExposedError is Cause<TError>
+                const exposedError = cause as unknown as TExposedError;
+                return throwOnError(exposedError);
+              }
+            }
+          : throwOnError,
+      onMutate:
+        typeof onMutate === "function"
+          ? async (...args) => {
+              return await runPromise(
+                onMutate(...args).pipe(
+                  Effect.withSpan("useEffectMutation.onMutate", {
+                    attributes: {
+                      mutationFn: mutationFn?.toString(),
+                    },
+                  }),
+                ),
+              );
+            }
+          : undefined,
+      onSuccess:
+        typeof onSuccess === "function"
+          ? async (...args) => {
+              return await runPromise(
+                onSuccess(...args).pipe(
+                  Effect.withSpan("useEffectMutation.onSuccess", {
+                    attributes: {
+                      mutationFn: mutationFn?.toString(),
+                    },
+                  }),
+                ),
+              );
+            }
+          : undefined,
+      onError:
+        typeof onError === "function"
+          ? async (baseError, ...args) => {
+              const error = throwOnDefect
+                ? Either.match(Cause.failureOrCause(baseError), {
+                    onLeft: (error) => error as TExposedError, // if throwOnDefect is true then TExposedError is TError
+                    onRight: (_cause) => {
+                      throw new Error(
+                        "non fail cause with throwOnDefect: true should have thrown already",
+                      );
+                    },
+                  })
+                : (baseError as unknown as TExposedError);
+
+              return await runPromise(
+                onError(error, ...args).pipe(
+                  Effect.withSpan("useEffectMutation.onError", {
+                    attributes: {
+                      mutationFn: mutationFn?.toString(),
+                    },
+                  }),
+                ),
+              );
+            }
+          : undefined,
+      onSettled:
+        typeof onSettled === "function"
+          ? async (data, baseError, ...args) => {
+              const error = baseError
+                ? throwOnDefect
+                  ? Either.match(Cause.failureOrCause(baseError), {
+                      onLeft: (error) => error as TExposedError, // if throwOnDefect is true then TExposedError is TError
+                      onRight: (_cause) => {
+                        throw new Error(
+                          "non fail cause with throwOnDefect: true should have thrown already",
+                        );
+                      },
+                    })
+                  : (baseError as unknown as TExposedError)
+                : null;
+
+              return await runPromise(
+                onSettled(data, error, ...args).pipe(
+                  Effect.withSpan("useEffectMutation.onSettled", {
+                    attributes: {
+                      mutationFn: mutationFn?.toString(),
+                    },
+                  }),
+                ),
+              );
+            }
+          : undefined,
+    });
+
+    //  the results from react query all have getters which trigger fine grained tracking, we need to replicate this when we wrap the results
+    const resultsProxy = new Proxy(baseResults, {
+      get: (target, prop, receiver) => {
+        if (prop === "error") {
+          return target.error
+            ? throwOnDefect
+              ? Either.match(
+                  Cause.failureOrCause(
+                    target.error as unknown as Cause.Cause<TError>, // this is safe because we always throw the full cause and we know that error is not null
+                  ),
+                  {
+                    onLeft: (error) => error as unknown as TExposedError, // if throwOnDefect is true then TExposedError is TError
+                    onRight: (_cause) => {
+                      throw new Error(
+                        "non fail cause with throwOnDefect: true should have thrown already",
+                      );
+                    },
+                  },
+                )
+              : target.error // if throwOnDefect is false then TExposedError is Cause<TError>, and base error is always Cause<TError>
+            : null;
+        } else if (prop === "failureReason") {
+          return target.failureReason
+            ? throwOnDefect
+              ? Either.match(
+                  Cause.failureOrCause(
+                    target.failureReason as unknown as Cause.Cause<TError>, // this is safe because we always throw the full cause and we know that error is not null
+                  ),
+                  {
+                    onLeft: (error) => error as unknown as TExposedError, // if throwOnDefect is true then TExposedError is TError
+                    onRight: (_cause) => {
+                      throw new Error(
+                        "non fail cause with throwOnDefect: true should have thrown already",
+                      );
+                    },
+                  },
+                )
+              : target.failureReason // if throwOnDefect is false then TExposedError is Cause<TError>, and base error is always Cause<TError>
+            : null;
+        } else if (prop === "mutate") {
+          return (variables, options) => {
+            return target.mutate(variables, options);
+          };
+        } else if (prop === "mutateAsync") {
+          return (variables, options) =>
+            target
+              .mutateAsync(variables, options)
+              .then((res) => Exit.succeed(res))
+              // we always throw the cause, so we can always catch it
+              .catch((cause: Cause.Cause<TError>) =>
+                Exit.fail(cause),
+              ) as Promise<Exit.Exit<TData, TError>>;
+        }
+
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    return resultsProxy as Override<
+      UseMutationResult<TData, TExposedError, TVariables, TContext>,
+      {
+        mutateAsync: (
+          variables: TVariables,
+          options?: MutateOptions<
+            TData,
+            Cause.Cause<TError>,
+            TVariables,
+            TContext
+          >,
+        ) => Promise<Exit.Exit<TData, TError>>;
+        mutate: (
+          variables: TVariables,
+          options?: MutateOptions<
+            TData,
+            Cause.Cause<TError>,
+            TVariables,
+            TContext
+          >,
+        ) => void;
+      }
+    >;
+    // this is safe because we are only doing very light remapping
+    // it gets mad when you touch error because it is either TError or null depending on other properities, but we honor those cases
+  };
+}
+
+
+
+---
+File: /packages/effect-react-query/src/index.tsx
+---
+
+import React from "react";
+import type { QueryClient as RQQueryClient } from "@tanstack/react-query";
+import { Context, Effect, Layer, ManagedRuntime } from "effect";
+
+import * as Hooks from "./hooks";
+
+// Memoize layer construction across all calls to `ManagedRuntime.make` across all calls to `makeEffectRuntime`
+// If the layer object itself changes (for instance because the args to the layer function change), then it will be recomputed
+// because it is a new distinct layer object
+const memoMap = Effect.runSync(Layer.makeMemoMap);
+
+// ? if I have two layers, one does not depend on args one does, do they all get recomputer
+
+declare const state: number;
+class PureLayer extends Context.Tag("pure")<PureLayer, number>() {
+  static make = Layer.sync(PureLayer, () => Date.now());
+}
+class DependentLayer extends Context.Tag("dependent")<
+  DependentLayer,
+  number
+>() {
+  static make = (n: number) => Layer.succeed(DependentLayer, n);
+}
+
+// does PureLayer get recomputed?
+// because the layer this returns is a new Layer, but PureLayer hasnt changed
+function makeLayer({ n }: { n: number }) {
+  return Layer.mergeAll(PureLayer.make, DependentLayer.make(n));
+}
+
+const result = makeEffectRuntime(makeLayer);
+function App() {
+  const [state, _setState] = React.useState(0);
+
+  return (
+    <result.Provider n={state}>
+      <div />
+    </result.Provider>
+  );
+}
+
+export class QueryClient extends Context.Tag("@markprompt/QueryClient")<
+  QueryClient,
+  RQQueryClient
+>() {}
+
+export function makeEffectRuntime<
+  R,
+  E,
+  Args extends Record<string, unknown> = {},
+>(
+  layer: (options: Args) => Layer.Layer<R, E>,
+): {
+  Provider: (
+    props: Args & { readonly children?: React.ReactNode },
+  ) => JSX.Element;
+  useEffectRuntime: () => ManagedRuntime.ManagedRuntime<R, E>;
+  useEffectQuery: any;
+  useEffectMutation: any;
+} {
+  const Context = React.createContext<ManagedRuntime.ManagedRuntime<
+    R,
+    E
+  > | null>(null);
+
+  const useEffectRuntime = () => {
+    const runtime = React.useContext(Context); // todo: can be `use`?
+    if (!runtime) {
+      throw new Error(
+        "useEffectRuntime must be used within an EffectRuntimeProvider",
+      );
+    }
+    return runtime;
+  };
+  const useEffectQuery = Hooks.makeUseEffectQuery(useEffectRuntime);
+  const useEffectMutation = Hooks.makeUseEffectMutation(useEffectRuntime);
+
+  const Provider = (args: Args & { readonly children?: React.ReactNode }) => {
+    const deps: unknown[] = [];
+    for (const key of Object.keys(args).sort()) {
+      if (key === "children") continue;
+      deps.push(args[key]);
+    }
+    const runtime = React.useMemo(
+      () => ManagedRuntime.make(layer(args), memoMap),
+      deps,
+    );
+    React.useEffect(
+      () => () => {
+        runtime.dispose();
+      },
+      [runtime],
+    );
+    return <Context.Provider value={runtime}>{args.children}</Context.Provider>;
+  };
+
+  return {
+    Provider,
+    useEffectRuntime,
+    useEffectQuery,
+    useEffectMutation,
+  };
+}
+
+
+
+---
+File: /tooling/eslint-config/base.js
+---
+
+// https://github.com/microsoft/rushstack/tree/main/eslint/eslint-patch
+require("@rushstack/eslint-patch/modern-module-resolution");
+
+/** @type {import("eslint").Linter.Config} */
+const config = {
+  extends: [
+    "turbo",
+    "eslint:recommended",
+    "plugin:@typescript-eslint/recommended-type-checked",
+    "plugin:@typescript-eslint/stylistic-type-checked",
+  ],
+  env: {
+    es2022: true,
+    node: true,
+  },
+  parser: "@typescript-eslint/parser",
+  parserOptions: {
+    project: true,
+  },
+  plugins: ["@typescript-eslint", "import"],
+  rules: {
+    "@typescript-eslint/no-explicit-any": "off",
+    "@typescript-eslint/consistent-type-definitions": "off",
+    "@typescript-eslint/method-signature-style": ["error", "property"],
+    "@typescript-eslint/no-unused-vars": [
+      "error",
+      { argsIgnorePattern: "^_", varsIgnorePattern: "^_" },
+    ],
+    "@typescript-eslint/consistent-type-imports": [
+      "warn",
+      { prefer: "type-imports", fixStyle: "separate-type-imports" },
+    ],
+    "@typescript-eslint/no-misused-promises": [
+      2,
+      { checksVoidReturn: { attributes: false } },
+    ],
+    "import/consistent-type-specifier-style": ["error", "prefer-top-level"],
+  },
+  overrides: [
+    {
+      files: ["**/test/**", "**/*.test.ts", "**/*.test.tsx"],
+      rules: {
+        // Less strict type checking for tests
+        "@typescript-eslint/no-unsafe-return": "off",
+        "@typescript-eslint/no-unsafe-member-access": "off",
+        "@typescript-eslint/no-unsafe-assignment": "off",
+        "@typescript-eslint/no-unsafe-argument": "off",
+        "@typescript-eslint/require-await": "off",
+        // Allow unused vars (required to consume test context hooks)
+        "@typescript-eslint/no-unused-vars": "off",
+      },
+    },
+  ],
+  ignorePatterns: [
+    "**/.eslintrc.cjs",
+    "**/*.config.js",
+    "**/*.config.cjs",
+    "packages/config/**",
+    ".next",
+    "dist",
+    "pnpm-lock.yaml",
+  ],
+  reportUnusedDisableDirectives: true,
+};
+
+module.exports = config;
+
+
+
+---
+File: /tooling/eslint-config/nextjs.js
+---
+
+/** @type {import('eslint').Linter.Config} */
+const config = {
+  extends: ["plugin:@next/next/recommended"],
+  rules: {
+    "@next/next/no-html-link-for-pages": "off",
+  },
+};
+
+module.exports = config;
+
+
+
+---
+File: /tooling/eslint-config/react.js
+---
+
+/** @type {import('eslint').Linter.Config} */
+const config = {
+  plugins: ["react", "react-hooks", "react-compiler"],
+  extends: ["plugin:react/recommended", "plugin:react-hooks/recommended"],
+  rules: {
+    "react-compiler/react-compiler": "error",
+    "react-hooks/exhaustive-deps": "error",
+    "react-hooks/rules-of-hooks": "error",
+  },
+  globals: {
+    React: "writable",
+  },
+  settings: {
+    react: {
+      version: "detect",
+    },
+  },
+  env: {
+    browser: true,
+  },
+};
+
+module.exports = config;
+

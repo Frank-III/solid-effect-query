@@ -1,0 +1,1487 @@
+Directory Structure:
+
+└── ./
+    └── http-server
+        ├── src
+        │   ├── Accounts
+        │   │   ├── AccountsRepo.ts
+        │   │   ├── Api.ts
+        │   │   ├── Http.ts
+        │   │   ├── Policy.ts
+        │   │   └── UsersRepo.ts
+        │   ├── Domain
+        │   │   ├── AccessToken.ts
+        │   │   ├── Account.ts
+        │   │   ├── Email.ts
+        │   │   ├── Group.ts
+        │   │   ├── Person.ts
+        │   │   ├── Policy.ts
+        │   │   └── User.ts
+        │   ├── Groups
+        │   │   ├── Api.ts
+        │   │   ├── Http.ts
+        │   │   ├── Policy.ts
+        │   │   └── Repo.ts
+        │   ├── lib
+        │   │   └── Layer.ts
+        │   ├── migrations
+        │   │   ├── 00001_create users.ts
+        │   │   ├── 00002_create groups.ts
+        │   │   └── 00003_create_people.ts
+        │   ├── People
+        │   │   ├── Api.ts
+        │   │   ├── Http.ts
+        │   │   ├── Policy.ts
+        │   │   └── Repo.ts
+        │   ├── Accounts.ts
+        │   ├── Api.ts
+        │   ├── client.ts
+        │   ├── Groups.ts
+        │   ├── Http.ts
+        │   ├── main.ts
+        │   ├── People.ts
+        │   ├── Sql.ts
+        │   ├── Tracing.ts
+        │   └── Uuid.ts
+        └── vitest.config.ts
+
+
+
+---
+File: /http-server/src/Accounts/AccountsRepo.ts
+---
+
+import { Model } from "@effect/sql"
+import { Effect } from "effect"
+import { Account } from "../Domain/Account.js"
+import { makeTestLayer } from "../lib/Layer.js"
+import { SqlLive } from "../Sql.js"
+
+export const make = Model.makeRepository(Account, {
+  tableName: "accounts",
+  spanPrefix: "AccountsRepo",
+  idColumn: "id"
+})
+
+export class AccountsRepo extends Effect.Service<AccountsRepo>()(
+  "Accounts/AccountsRepo",
+  {
+    effect: Model.makeRepository(Account, {
+      tableName: "accounts",
+      spanPrefix: "AccountsRepo",
+      idColumn: "id"
+    }),
+    dependencies: [SqlLive]
+  }
+) {
+  static Test = makeTestLayer(AccountsRepo)({})
+}
+
+
+
+---
+File: /http-server/src/Accounts/Api.ts
+---
+
+import { HttpApiEndpoint, HttpApiGroup, HttpApiMiddleware, HttpApiSecurity, OpenApi } from "@effect/platform"
+import { Schema } from "effect"
+import { Unauthorized } from "../Domain/Policy.js"
+import { CurrentUser, User, UserIdFromString, UserNotFound, UserWithSensitive } from "../Domain/User.js"
+
+export class Authentication extends HttpApiMiddleware.Tag<Authentication>()(
+  "Accounts/Api/Authentication",
+  {
+    provides: CurrentUser,
+    failure: Unauthorized,
+    security: {
+      cookie: HttpApiSecurity.apiKey({
+        in: "cookie",
+        key: "token"
+      })
+    }
+  }
+) {}
+
+export class AccountsApi extends HttpApiGroup.make("accounts")
+  .add(
+    HttpApiEndpoint.patch("updateUser", "/users/:id")
+      .setPath(Schema.Struct({ id: UserIdFromString }))
+      .addSuccess(User.json)
+      .addError(UserNotFound)
+      .setPayload(Schema.partialWith(User.jsonUpdate, { exact: true }))
+  )
+  .add(
+    HttpApiEndpoint.get("getUserMe", "/users/me").addSuccess(
+      UserWithSensitive.json
+    )
+  )
+  .add(
+    HttpApiEndpoint.get("getUser", "/users/:id")
+      .setPath(Schema.Struct({ id: UserIdFromString }))
+      .addSuccess(User.json)
+      .addError(UserNotFound)
+  )
+  .middlewareEndpoints(Authentication)
+  // unauthenticated
+  .add(
+    HttpApiEndpoint.post("createUser", "/users")
+      .addSuccess(UserWithSensitive.json)
+      .setPayload(User.jsonCreate)
+  )
+  .annotate(OpenApi.Title, "Accounts")
+  .annotate(OpenApi.Description, "Manage user accounts")
+{}
+
+
+
+---
+File: /http-server/src/Accounts/Http.ts
+---
+
+import { HttpApiBuilder } from "@effect/platform"
+import { Effect, Layer, Option, pipe } from "effect"
+import { Accounts } from "../Accounts.js"
+import { Api } from "../Api.js"
+import { accessTokenFromRedacted } from "../Domain/AccessToken.js"
+import { policyUse, Unauthorized, withSystemActor } from "../Domain/Policy.js"
+import { CurrentUser, UserId, UserNotFound } from "../Domain/User.js"
+import { Authentication } from "./Api.js"
+import { AccountsPolicy } from "./Policy.js"
+import { UsersRepo } from "./UsersRepo.js"
+
+export const AuthenticationLive = Layer.effect(
+  Authentication,
+  Effect.gen(function*() {
+    const userRepo = yield* UsersRepo
+
+    return Authentication.of({
+      cookie: (token) =>
+        userRepo.findByAccessToken(accessTokenFromRedacted(token)).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () =>
+                new Unauthorized({
+                  actorId: UserId.make(-1),
+                  entity: "User",
+                  action: "read"
+                }),
+              onSome: Effect.succeed
+            })
+          ),
+          Effect.withSpan("Authentication.cookie")
+        )
+    })
+  })
+).pipe(Layer.provide(UsersRepo.Default))
+
+export const HttpAccountsLive = HttpApiBuilder.group(
+  Api,
+  "accounts",
+  (handlers) =>
+    Effect.gen(function*() {
+      const accounts = yield* Accounts
+      const policy = yield* AccountsPolicy
+
+      return handlers
+        .handle("updateUser", ({ path, payload }) =>
+          pipe(
+            accounts.updateUser(path.id, payload),
+            policyUse(policy.canUpdate(path.id))
+          ))
+        .handle("getUserMe", () =>
+          CurrentUser.pipe(
+            Effect.flatMap(accounts.embellishUser),
+            withSystemActor
+          ))
+        .handle("getUser", ({ path }) =>
+          pipe(
+            accounts.findUserById(path.id),
+            Effect.flatMap(
+              Option.match({
+                onNone: () => new UserNotFound({ id: path.id }),
+                onSome: Effect.succeed
+              })
+            ),
+            policyUse(policy.canRead(path.id))
+          ))
+        .handle("createUser", ({ payload }) =>
+          accounts.createUser(payload).pipe(
+            withSystemActor,
+            Effect.tap((user) =>
+              HttpApiBuilder.securitySetCookie(
+                Authentication.security.cookie,
+                user.accessToken
+              )
+            )
+          ))
+    })
+).pipe(
+  Layer.provide([Accounts.Default, AccountsPolicy.Default, AuthenticationLive])
+)
+
+
+
+---
+File: /http-server/src/Accounts/Policy.ts
+---
+
+import { Effect } from "effect"
+import { policy } from "../Domain/Policy.js"
+import type { UserId } from "../Domain/User.js"
+
+export class AccountsPolicy extends Effect.Service<AccountsPolicy>()(
+  "Accounts/Policy",
+  {
+    // eslint-disable-next-line require-yield
+    effect: Effect.gen(function*() {
+      const canUpdate = (toUpdate: UserId) => policy("User", "update", (actor) => Effect.succeed(actor.id === toUpdate))
+
+      const canRead = (toRead: UserId) => policy("User", "read", (actor) => Effect.succeed(actor.id === toRead))
+
+      const canReadSensitive = (toRead: UserId) =>
+        policy("User", "readSensitive", (actor) => Effect.succeed(actor.id === toRead))
+
+      return { canUpdate, canRead, canReadSensitive } as const
+    })
+  }
+) {}
+
+
+
+---
+File: /http-server/src/Accounts/UsersRepo.ts
+---
+
+import { Model, SqlClient, SqlSchema } from "@effect/sql"
+import { Effect, pipe } from "effect"
+import { AccessToken } from "../Domain/AccessToken.js"
+import { User } from "../Domain/User.js"
+import { makeTestLayer } from "../lib/Layer.js"
+import { SqlLive } from "../Sql.js"
+
+export class UsersRepo extends Effect.Service<UsersRepo>()(
+  "Accounts/UsersRepo",
+  {
+    effect: Effect.gen(function*() {
+      const sql = yield* SqlClient.SqlClient
+      const repo = yield* Model.makeRepository(User, {
+        tableName: "users",
+        spanPrefix: "UsersRepo",
+        idColumn: "id"
+      })
+
+      const findByAccessTokenSchema = SqlSchema.findOne({
+        Request: AccessToken,
+        Result: User,
+        execute: (key) => sql`select * from users where accessToken = ${key}`
+      })
+      const findByAccessToken = (apiKey: AccessToken) =>
+        pipe(
+          findByAccessTokenSchema(apiKey),
+          Effect.orDie,
+          Effect.withSpan("UsersRepo.findByAccessToken")
+        )
+
+      return { ...repo, findByAccessToken } as const
+    }),
+    dependencies: [SqlLive]
+  }
+) {
+  static Test = makeTestLayer(UsersRepo)({})
+}
+
+
+
+---
+File: /http-server/src/Domain/AccessToken.ts
+---
+
+import { Redacted, Schema } from "effect"
+
+export const AccessTokenString = Schema.String.pipe(Schema.brand("AccessToken"))
+export const AccessToken = Schema.Redacted(AccessTokenString)
+export type AccessToken = typeof AccessToken.Type
+
+export const accessTokenFromString = (token: string): AccessToken => Redacted.make(AccessTokenString.make(token))
+
+export const accessTokenFromRedacted = (
+  token: Redacted.Redacted
+): AccessToken => token as AccessToken
+
+
+
+---
+File: /http-server/src/Domain/Account.ts
+---
+
+import { Model } from "@effect/sql"
+import { Schema } from "effect"
+
+export const AccountId = Schema.Number.pipe(Schema.brand("AccountId"))
+export type AccountId = typeof AccountId.Type
+
+export class Account extends Model.Class<Account>("Account")({
+  id: Model.Generated(AccountId),
+  createdAt: Model.DateTimeInsert,
+  updatedAt: Model.DateTimeUpdate
+}) {}
+
+
+
+---
+File: /http-server/src/Domain/Email.ts
+---
+
+import { Schema } from "effect"
+
+export const Email = Schema.String.pipe(
+  Schema.pattern(/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/),
+  Schema.annotations({
+    title: "Email",
+    description: "An email address"
+  }),
+  Schema.brand("Email"),
+  Schema.annotations({ title: "Email" })
+)
+
+export type Email = typeof Email.Type
+
+
+
+---
+File: /http-server/src/Domain/Group.ts
+---
+
+import { HttpApiSchema } from "@effect/platform"
+import { Model } from "@effect/sql"
+import { Schema } from "effect"
+import { AccountId } from "./Account.js"
+
+export const GroupId = Schema.Number.pipe(Schema.brand("GroupId"))
+export type GroupId = typeof GroupId.Type
+
+export const GroupIdFromString = Schema.NumberFromString.pipe(
+  Schema.compose(GroupId)
+)
+
+export class Group extends Model.Class<Group>("Group")({
+  id: Model.Generated(GroupId),
+  ownerId: Model.GeneratedByApp(AccountId),
+  name: Schema.NonEmptyTrimmedString,
+  createdAt: Model.DateTimeInsert,
+  updatedAt: Model.DateTimeUpdate
+}) {}
+
+export class GroupNotFound extends Schema.TaggedError<GroupNotFound>()(
+  "GroupNotFound",
+  { id: GroupId },
+  HttpApiSchema.annotations({ status: 404 })
+) {}
+
+
+
+---
+File: /http-server/src/Domain/Person.ts
+---
+
+import { Model } from "@effect/sql"
+import { Schema } from "effect"
+import { GroupId } from "./Group.js"
+
+export const PersonId = Schema.Number.pipe(Schema.brand("PersonId"))
+export type PersonId = typeof PersonId.Type
+
+export const PersonIdFromString = Schema.NumberFromString.pipe(
+  Schema.compose(PersonId)
+)
+
+export class Person extends Model.Class<Person>("Person")({
+  id: Model.Generated(PersonId),
+  groupId: Model.GeneratedByApp(GroupId),
+  firstName: Schema.NonEmptyTrimmedString,
+  lastName: Schema.NonEmptyTrimmedString,
+  dateOfBirth: Model.FieldOption(Model.Date),
+  createdAt: Model.DateTimeInsert,
+  updatedAt: Model.DateTimeUpdate
+}) {}
+
+export class PersonNotFound extends Schema.TaggedError<PersonNotFound>()(
+  "PersonNotFound",
+  {
+    id: PersonId
+  }
+) {}
+
+
+
+---
+File: /http-server/src/Domain/Policy.ts
+---
+
+import { HttpApiSchema } from "@effect/platform"
+import { Effect, Predicate, Schema } from "effect"
+import type { User } from "../Domain/User.js"
+import { CurrentUser, UserId } from "../Domain/User.js"
+
+export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
+  "Unauthorized",
+  {
+    actorId: UserId,
+    entity: Schema.String,
+    action: Schema.String
+  },
+  HttpApiSchema.annotations({ status: 403 })
+) {
+  get message() {
+    return `Actor (${this.actorId}) is not authorized to perform action "${this.action}" on entity "${this.entity}"`
+  }
+
+  static is(u: unknown): u is Unauthorized {
+    return Predicate.isTagged(u, "Unauthorized")
+  }
+
+  static refail(entity: string, action: string) {
+    return <A, E, R>(
+      effect: Effect.Effect<A, E, R>
+    ): Effect.Effect<A, Unauthorized, CurrentUser | R> =>
+      Effect.catchIf(
+        effect,
+        (e) => !Unauthorized.is(e),
+        () =>
+          Effect.flatMap(
+            CurrentUser,
+            (actor) =>
+              new Unauthorized({
+                actorId: actor.id,
+                entity,
+                action
+              })
+          )
+      ) as any
+  }
+}
+
+export const TypeId: unique symbol = Symbol.for("Domain/Policy/AuthorizedActor")
+export type TypeId = typeof TypeId
+
+export interface AuthorizedActor<Entity extends string, Action extends string> extends User {
+  readonly [TypeId]: {
+    readonly _Entity: Entity
+    readonly _Action: Action
+  }
+}
+
+export const authorizedActor = (user: User): AuthorizedActor<any, any> => user as any
+
+export const policy = <Entity extends string, Action extends string, E, R>(
+  entity: Entity,
+  action: Action,
+  f: (actor: User) => Effect.Effect<boolean, E, R>
+): Effect.Effect<
+  AuthorizedActor<Entity, Action>,
+  E | Unauthorized,
+  R | CurrentUser
+> =>
+  Effect.flatMap(CurrentUser, (actor) =>
+    Effect.flatMap(f(actor), (can) =>
+      can
+        ? Effect.succeed(authorizedActor(actor))
+        : Effect.fail(
+          new Unauthorized({
+            actorId: actor.id,
+            entity,
+            action
+          })
+        )))
+
+export const policyCompose = <Actor extends AuthorizedActor<any, any>, E, R>(
+  that: Effect.Effect<Actor, E, R>
+) =>
+<Actor2 extends AuthorizedActor<any, any>, E2, R2>(
+  self: Effect.Effect<Actor2, E2, R2>
+): Effect.Effect<Actor | Actor2, E | Unauthorized, R | CurrentUser> => Effect.zipRight(self, that) as any
+
+export const policyUse = <Actor extends AuthorizedActor<any, any>, E, R>(
+  policy: Effect.Effect<Actor, E, R>
+) =>
+<A, E2, R2>(
+  effect: Effect.Effect<A, E2, R2>
+): Effect.Effect<A, E | E2, Exclude<R2, Actor> | R> => policy.pipe(Effect.zipRight(effect)) as any
+
+export const policyRequire = <Entity extends string, Action extends string>(
+  _entity: Entity,
+  _action: Action
+) =>
+<A, E, R>(
+  effect: Effect.Effect<A, E, R>
+): Effect.Effect<A, E, R | AuthorizedActor<Entity, Action>> => effect
+
+export const withSystemActor = <A, E, R>(
+  effect: Effect.Effect<A, E, R>
+): Effect.Effect<A, E, Exclude<R, AuthorizedActor<any, any>>> => effect as any
+
+
+
+---
+File: /http-server/src/Domain/User.ts
+---
+
+import { HttpApiSchema } from "@effect/platform"
+import { Model } from "@effect/sql"
+import { Context, Schema } from "effect"
+import { AccessToken } from "./AccessToken.js"
+import { Account, AccountId } from "./Account.js"
+import { Email } from "./Email.js"
+
+export const UserId = Schema.Number.pipe(Schema.brand("UserId"))
+export type UserId = typeof UserId.Type
+
+export const UserIdFromString = Schema.NumberFromString.pipe(
+  Schema.compose(UserId)
+)
+
+export class User extends Model.Class<User>("User")({
+  id: Model.Generated(UserId),
+  accountId: Model.GeneratedByApp(AccountId),
+  email: Email,
+  accessToken: Model.Sensitive(AccessToken),
+  createdAt: Model.DateTimeInsert,
+  updatedAt: Model.DateTimeUpdate
+}) {}
+
+export class UserWithSensitive extends Model.Class<UserWithSensitive>(
+  "UserWithSensitive"
+)({
+  ...Model.fields(User),
+  accessToken: AccessToken,
+  account: Account
+}) {}
+
+export class CurrentUser extends Context.Tag("Domain/User/CurrentUser")<
+  CurrentUser,
+  User
+>() {}
+
+export class UserNotFound extends Schema.TaggedError<UserNotFound>()(
+  "UserNotFound",
+  { id: UserId },
+  HttpApiSchema.annotations({ status: 404 })
+) {}
+
+
+
+---
+File: /http-server/src/Groups/Api.ts
+---
+
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "@effect/platform"
+import { Schema } from "effect"
+import { Authentication } from "../Accounts/Api.js"
+import { Group, GroupIdFromString, GroupNotFound } from "../Domain/Group.js"
+
+export class GroupsApi extends HttpApiGroup.make("groups")
+  .add(
+    HttpApiEndpoint.post("create", "/")
+      .addSuccess(Group.json)
+      .setPayload(Group.jsonCreate)
+  )
+  .add(
+    HttpApiEndpoint.patch("update", "/:id")
+      .setPath(Schema.Struct({ id: GroupIdFromString }))
+      .addSuccess(Group.json)
+      .setPayload(Group.jsonUpdate)
+      .addError(GroupNotFound)
+  )
+  .middleware(Authentication)
+  .prefix("/groups")
+  .annotate(OpenApi.Title, "Groups")
+  .annotate(OpenApi.Description, "Manage groups")
+{}
+
+
+
+---
+File: /http-server/src/Groups/Http.ts
+---
+
+import { HttpApiBuilder } from "@effect/platform"
+import { Effect, Layer, pipe } from "effect"
+import { AuthenticationLive } from "../Accounts/Http.js"
+import { Api } from "../Api.js"
+import { policyUse } from "../Domain/Policy.js"
+import { CurrentUser } from "../Domain/User.js"
+import { Groups } from "../Groups.js"
+import { GroupsPolicy } from "./Policy.js"
+
+export const HttpGroupsLive = HttpApiBuilder.group(Api, "groups", (handlers) =>
+  Effect.gen(function*() {
+    const groups = yield* Groups
+    const policy = yield* GroupsPolicy
+
+    return handlers
+      .handle("create", ({ payload }) =>
+        CurrentUser.pipe(
+          Effect.flatMap((user) => groups.create(user.accountId, payload)),
+          policyUse(policy.canCreate(payload))
+        ))
+      .handle("update", ({ path, payload }) =>
+        groups.with(path.id, (group) =>
+          pipe(
+            groups.update(group, payload),
+            policyUse(policy.canUpdate(group))
+          )))
+  })).pipe(
+    Layer.provide([AuthenticationLive, Groups.Default, GroupsPolicy.Default])
+  )
+
+
+
+---
+File: /http-server/src/Groups/Policy.ts
+---
+
+import { Effect } from "effect"
+import type { Group } from "../Domain/Group.js"
+import { policy } from "../Domain/Policy.js"
+
+export class GroupsPolicy extends Effect.Service<GroupsPolicy>()(
+  "Groups/Policy",
+  {
+    // eslint-disable-next-line require-yield
+    effect: Effect.gen(function*() {
+      const canCreate = (_group: typeof Group.jsonCreate.Type) =>
+        policy("Group", "create", (_actor) => Effect.succeed(true))
+
+      const canUpdate = (group: Group) =>
+        policy("Group", "update", (actor) => Effect.succeed(group.ownerId === actor.accountId))
+
+      return { canCreate, canUpdate } as const
+    })
+  }
+) {}
+
+
+
+---
+File: /http-server/src/Groups/Repo.ts
+---
+
+import { Model } from "@effect/sql"
+import { Effect } from "effect"
+import { Group } from "../Domain/Group.js"
+import { SqlLive } from "../Sql.js"
+
+export class GroupsRepo extends Effect.Service<GroupsRepo>()("Groups/Repo", {
+  effect: Model.makeRepository(Group, {
+    tableName: "groups",
+    spanPrefix: "GroupsRepo",
+    idColumn: "id"
+  }),
+  dependencies: [SqlLive]
+}) {}
+
+
+
+---
+File: /http-server/src/lib/Layer.ts
+---
+
+import type { Context } from "effect"
+import { Effect, Layer } from "effect"
+
+const makeUnimplemented = (id: string, prop: PropertyKey) => {
+  const dead = Effect.die(`${id}: Unimplemented method "${prop.toString()}"`)
+  function unimplemented() {
+    return dead
+  }
+  Object.assign(unimplemented, dead)
+  Object.setPrototypeOf(unimplemented, Object.getPrototypeOf(dead))
+  return unimplemented
+}
+
+const makeUnimplementedProxy = <A extends object>(
+  service: string,
+  impl: Partial<A>
+): A =>
+  new Proxy({ ...impl } as A, {
+    get(target, prop, _receiver) {
+      if (prop in target) {
+        return target[prop as keyof A]
+      }
+      return ((target as any)[prop] = makeUnimplemented(service, prop))
+    },
+    has: () => true
+  })
+
+export const makeTestLayer = <I, S extends object>(tag: Context.Tag<I, S>) => (service: Partial<S>): Layer.Layer<I> =>
+  Layer.succeed(tag, makeUnimplementedProxy(tag.key, service))
+
+
+
+---
+File: /http-server/src/migrations/00001_create users.ts
+---
+
+import { SqlClient } from "@effect/sql"
+import { Effect } from "effect"
+
+export default Effect.gen(function*() {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql.onDialectOrElse({
+    pg: () =>
+      sql`
+      CREATE TABLE accounts (
+        id SERIAL PRIMARY KEY,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+      )
+    `,
+    orElse: () =>
+      sql`
+      CREATE TABLE accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL
+      )
+    `
+  })
+  yield* sql.onDialectOrElse({
+    pg: () =>
+      sql`
+      CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        accountId INTEGER NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        accessToken VARCHAR(255) UNIQUE NOT NULL,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        FOREIGN KEY (accountId) REFERENCES accounts(id)
+      )
+    `,
+    orElse: () =>
+      sql`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        accountId INTEGER NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        accessToken VARCHAR(255) UNIQUE NOT NULL,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        FOREIGN KEY (accountId) REFERENCES accounts(id)
+      )
+    `
+  })
+})
+
+
+
+---
+File: /http-server/src/migrations/00002_create groups.ts
+---
+
+import { SqlClient } from "@effect/sql"
+import { Effect } from "effect"
+
+export default Effect.gen(function*() {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql.onDialectOrElse({
+    pg: () =>
+      sql`
+      CREATE TABLE groups (
+        id SERIAL PRIMARY KEY,
+        ownerId INTEGER NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        FOREIGN KEY (ownerId) REFERENCES accounts(id)
+      )
+    `,
+    orElse: () =>
+      sql`
+      CREATE TABLE groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ownerId INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        FOREIGN KEY (ownerId) REFERENCES accounts(id)
+      )
+    `
+  })
+})
+
+
+
+---
+File: /http-server/src/migrations/00003_create_people.ts
+---
+
+import { SqlClient } from "@effect/sql"
+import { Effect } from "effect"
+
+export default Effect.gen(function*() {
+  const sql = yield* SqlClient.SqlClient
+  yield* sql.onDialectOrElse({
+    pg: () =>
+      sql`
+      CREATE TABLE people (
+        id SERIAL PRIMARY KEY,
+        groupId INTEGER NOT NULL,
+        firstName VARCHAR(255) NOT NULL,
+        lastName VARCHAR(255) NOT NULL,
+        dateOfBirth DATE,
+        createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        FOREIGN KEY (ownerId) REFERENCES groups(id)
+      )
+    `,
+    orElse: () =>
+      sql`
+      CREATE TABLE people (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        groupId INTEGER NOT NULL,
+        firstName TEXT NOT NULL,
+        lastName TEXT NOT NULL,
+        dateOfBirth DATE,
+        createdAt DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        updatedAt DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL,
+        FOREIGN KEY (groupId) REFERENCES groups(id)
+      )
+    `
+  })
+})
+
+
+
+---
+File: /http-server/src/People/Api.ts
+---
+
+import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "@effect/platform"
+import { Schema } from "effect"
+import { Authentication } from "../Accounts/Api.js"
+import { GroupIdFromString, GroupNotFound } from "../Domain/Group.js"
+import { Person, PersonIdFromString, PersonNotFound } from "../Domain/Person.js"
+
+export class PeopleApi extends HttpApiGroup.make("people")
+  .prefix("/people")
+  .add(
+    HttpApiEndpoint.post("create", "/groups/:groupId/people")
+      .setPath(Schema.Struct({ groupId: GroupIdFromString }))
+      .addSuccess(Person.json)
+      .setPayload(Person.jsonCreate)
+      .addError(GroupNotFound)
+  )
+  .add(
+    HttpApiEndpoint.get("findById", "/people/:id")
+      .setPath(Schema.Struct({ id: PersonIdFromString }))
+      .addSuccess(Person.json)
+      .addError(PersonNotFound)
+  )
+  .middleware(Authentication)
+  .annotate(OpenApi.Title, "People")
+  .annotate(OpenApi.Description, "Manage people")
+{}
+
+
+
+---
+File: /http-server/src/People/Http.ts
+---
+
+import { HttpApiBuilder } from "@effect/platform"
+import { Effect, Layer, pipe } from "effect"
+import { AuthenticationLive } from "../Accounts/Http.js"
+import { Api } from "../Api.js"
+import { PersonNotFound } from "../Domain/Person.js"
+import { policyUse } from "../Domain/Policy.js"
+import { Groups } from "../Groups.js"
+import { People } from "../People.js"
+import { PeoplePolicy } from "./Policy.js"
+
+export const HttpPeopleLive = HttpApiBuilder.group(Api, "people", (handlers) =>
+  Effect.gen(function*() {
+    const groups = yield* Groups
+    const people = yield* People
+    const policy = yield* PeoplePolicy
+
+    return handlers
+      .handle("create", ({ path, payload }) =>
+        groups.with(path.groupId, (group) =>
+          pipe(
+            people.create(group.id, payload),
+            policyUse(policy.canCreate(group.id, payload))
+          )))
+      .handle("findById", ({ path }) =>
+        pipe(
+          people.findById(path.id),
+          Effect.flatten,
+          Effect.mapError(() => new PersonNotFound({ id: path.id })),
+          policyUse(policy.canRead(path.id))
+        ))
+  })).pipe(
+    Layer.provide([
+      Groups.Default,
+      People.Default,
+      PeoplePolicy.Default,
+      AuthenticationLive
+    ])
+  )
+
+
+
+---
+File: /http-server/src/People/Policy.ts
+---
+
+import { Effect, pipe } from "effect"
+import type { GroupId } from "../Domain/Group.js"
+import type { Person, PersonId } from "../Domain/Person.js"
+import { policy, policyCompose, Unauthorized } from "../Domain/Policy.js"
+import { Groups } from "../Groups.js"
+import { GroupsPolicy } from "../Groups/Policy.js"
+import { People } from "../People.js"
+
+export class PeoplePolicy extends Effect.Service<PeoplePolicy>()(
+  "People/Policy",
+  {
+    effect: Effect.gen(function*() {
+      const groupsPolicy = yield* GroupsPolicy
+      const groups = yield* Groups
+      const people = yield* People
+
+      const canCreate = (
+        groupId: GroupId,
+        _person: typeof Person.jsonCreate.Type
+      ) =>
+        Unauthorized.refail(
+          "Person",
+          "create"
+        )(
+          groups.with(groupId, (group) =>
+            pipe(
+              groupsPolicy.canUpdate(group),
+              policyCompose(
+                policy("Person", "create", (_actor) => Effect.succeed(true))
+              )
+            ))
+        )
+
+      const canRead = (id: PersonId) =>
+        Unauthorized.refail(
+          "Person",
+          "read"
+        )(
+          people.with(id, (person) =>
+            groups.with(person.groupId, (group) =>
+              pipe(
+                groupsPolicy.canUpdate(group),
+                policyCompose(
+                  policy("Person", "read", (_actor) => Effect.succeed(true))
+                )
+              )))
+        )
+
+      return { canCreate, canRead } as const
+    }),
+    dependencies: [GroupsPolicy.Default, Groups.Default, People.Default]
+  }
+) {}
+
+
+
+---
+File: /http-server/src/People/Repo.ts
+---
+
+import { Model } from "@effect/sql"
+import { Effect } from "effect"
+import { Person } from "../Domain/Person.js"
+import { SqlLive } from "../Sql.js"
+
+export class PeopleRepo extends Effect.Service<PeopleRepo>()("People/Repo", {
+  effect: Model.makeRepository(Person, {
+    tableName: "people",
+    spanPrefix: "PeopleRepo",
+    idColumn: "id"
+  }),
+  dependencies: [SqlLive]
+}) {}
+
+
+
+---
+File: /http-server/src/Accounts.ts
+---
+
+import { SqlClient } from "@effect/sql"
+import { Effect, Layer, Option, pipe } from "effect"
+import { AccountsRepo } from "./Accounts/AccountsRepo.js"
+import { UsersRepo } from "./Accounts/UsersRepo.js"
+import type { AccessToken } from "./Domain/AccessToken.js"
+import { accessTokenFromString } from "./Domain/AccessToken.js"
+import { Account } from "./Domain/Account.js"
+import { policyRequire } from "./Domain/Policy.js"
+import type { UserId } from "./Domain/User.js"
+import { User, UserNotFound, UserWithSensitive } from "./Domain/User.js"
+import { SqlLive, SqlTest } from "./Sql.js"
+import { Uuid } from "./Uuid.js"
+
+export class Accounts extends Effect.Service<Accounts>()("Accounts", {
+  effect: Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+    const accountRepo = yield* AccountsRepo
+    const userRepo = yield* UsersRepo
+    const uuid = yield* Uuid
+
+    const createUser = (user: typeof User.jsonCreate.Type) =>
+      accountRepo.insert(Account.insert.make({})).pipe(
+        Effect.tap((account) => Effect.annotateCurrentSpan("account", account)),
+        Effect.bindTo("account"),
+        Effect.bind("accessToken", () => uuid.generate.pipe(Effect.map(accessTokenFromString))),
+        Effect.bind("user", ({ accessToken, account }) =>
+          userRepo.insert(
+            User.insert.make({
+              ...user,
+              accountId: account.id,
+              accessToken
+            })
+          )),
+        Effect.map(
+          ({ account, user }) =>
+            new UserWithSensitive({
+              ...user,
+              account
+            })
+        ),
+        sql.withTransaction,
+        Effect.orDie,
+        Effect.withSpan("Accounts.createUser", { attributes: { user } }),
+        policyRequire("User", "create")
+      )
+
+    const updateUser = (
+      id: UserId,
+      user: Partial<typeof User.jsonUpdate.Type>
+    ) =>
+      userRepo.findById(id).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => new UserNotFound({ id }),
+            onSome: Effect.succeed
+          })
+        ),
+        Effect.andThen((previous) =>
+          userRepo.update({
+            ...previous,
+            ...user,
+            id,
+            updatedAt: undefined
+          })
+        ),
+        sql.withTransaction,
+        Effect.catchTag("SqlError", (err) => Effect.die(err)),
+        Effect.withSpan("Accounts.updateUser", { attributes: { id, user } }),
+        policyRequire("User", "update")
+      )
+
+    const findUserByAccessToken = (apiKey: AccessToken) =>
+      pipe(
+        userRepo.findByAccessToken(apiKey),
+        Effect.withSpan("Accounts.findUserByAccessToken"),
+        policyRequire("User", "read")
+      )
+
+    const findUserById = (id: UserId) =>
+      pipe(
+        userRepo.findById(id),
+        Effect.withSpan("Accounts.findUserById", {
+          attributes: { id }
+        }),
+        policyRequire("User", "read")
+      )
+
+    const embellishUser = (user: User) =>
+      pipe(
+        accountRepo.findById(user.accountId),
+        Effect.flatten,
+        Effect.map((account) => new UserWithSensitive({ ...user, account })),
+        Effect.orDie,
+        Effect.withSpan("Accounts.embellishUser", {
+          attributes: { id: user.id }
+        }),
+        policyRequire("User", "readSensitive")
+      )
+
+    return {
+      createUser,
+      updateUser,
+      findUserByAccessToken,
+      findUserById,
+      embellishUser
+    } as const
+  }),
+  dependencies: [
+    SqlLive,
+    AccountsRepo.Default,
+    UsersRepo.Default,
+    Uuid.Default
+  ]
+}) {
+  static Test = this.DefaultWithoutDependencies.pipe(
+    Layer.provideMerge(SqlTest),
+    Layer.provideMerge(Uuid.Test)
+  )
+}
+
+
+
+---
+File: /http-server/src/Api.ts
+---
+
+import { HttpApi, OpenApi } from "@effect/platform"
+import { AccountsApi } from "./Accounts/Api.js"
+import { GroupsApi } from "./Groups/Api.js"
+import { PeopleApi } from "./People/Api.js"
+
+export class Api extends HttpApi.empty
+  .add(AccountsApi)
+  .add(GroupsApi)
+  .add(PeopleApi)
+  .annotate(OpenApi.Title, "Groups API")
+{}
+
+
+
+---
+File: /http-server/src/client.ts
+---
+
+import { Cookies, HttpApiClient, HttpClient } from "@effect/platform"
+import { NodeHttpClient, NodeRuntime } from "@effect/platform-node"
+import { Effect, Ref } from "effect"
+import { Api } from "./Api.js"
+import { Email } from "./Domain/Email.js"
+
+Effect.gen(function*() {
+  const cookies = yield* Ref.make(Cookies.empty)
+  const client = yield* HttpApiClient.make(Api, {
+    baseUrl: "http://localhost:3000",
+    transformClient: HttpClient.withCookiesRef(cookies)
+  })
+  const user = yield* client.accounts.createUser({
+    payload: {
+      email: Email.make("joe2.bloggs@example.com")
+    }
+  })
+  console.log(user)
+  const me = yield* client.accounts.getUserMe()
+  console.log(me)
+}).pipe(Effect.provide(NodeHttpClient.layerUndici), NodeRuntime.runMain)
+
+
+
+---
+File: /http-server/src/Groups.ts
+---
+
+import { SqlClient } from "@effect/sql"
+import { Effect, Option, pipe } from "effect"
+import type { AccountId } from "./Domain/Account.js"
+import type { GroupId } from "./Domain/Group.js"
+import { Group, GroupNotFound } from "./Domain/Group.js"
+import { policyRequire } from "./Domain/Policy.js"
+import { GroupsRepo } from "./Groups/Repo.js"
+import { SqlLive } from "./Sql.js"
+
+export class Groups extends Effect.Service<Groups>()("Groups", {
+  effect: Effect.gen(function*() {
+    const repo = yield* GroupsRepo
+    const sql = yield* SqlClient.SqlClient
+
+    const create = (ownerId: AccountId, group: typeof Group.jsonCreate.Type) =>
+      pipe(
+        repo.insert(
+          Group.insert.make({
+            ...group,
+            ownerId
+          })
+        ),
+        Effect.withSpan("Groups.create", { attributes: { group } }),
+        policyRequire("Group", "create")
+      )
+
+    const update = (
+      group: Group,
+      update: Partial<typeof Group.jsonUpdate.Type>
+    ) =>
+      pipe(
+        repo.update({
+          ...group,
+          ...update,
+          updatedAt: undefined
+        }),
+        Effect.withSpan("Groups.update", {
+          attributes: { id: group.id, update }
+        }),
+        policyRequire("Group", "update")
+      )
+
+    const findById = (id: GroupId) =>
+      pipe(
+        repo.findById(id),
+        Effect.withSpan("Groups.findById", { attributes: { id } }),
+        policyRequire("Group", "read")
+      )
+
+    const with_ = <A, E, R>(
+      id: GroupId,
+      f: (group: Group) => Effect.Effect<A, E, R>
+    ): Effect.Effect<A, E | GroupNotFound, R> =>
+      pipe(
+        repo.findById(id),
+        Effect.flatMap(
+          Option.match({
+            onNone: () => new GroupNotFound({ id }),
+            onSome: Effect.succeed
+          })
+        ),
+        Effect.flatMap(f),
+        sql.withTransaction,
+        Effect.catchTag("SqlError", (err) => Effect.die(err)),
+        Effect.withSpan("Groups.with", { attributes: { id } })
+      )
+
+    return { create, update, findById, with: with_ } as const
+  }),
+  dependencies: [SqlLive, GroupsRepo.Default]
+}) {}
+
+
+
+---
+File: /http-server/src/Http.ts
+---
+
+import { HttpApiBuilder, HttpApiSwagger, HttpMiddleware, HttpServer } from "@effect/platform"
+import { NodeHttpServer } from "@effect/platform-node"
+import { Layer } from "effect"
+import { createServer } from "http"
+import { HttpAccountsLive } from "./Accounts/Http.js"
+import { Api } from "./Api.js"
+import { HttpGroupsLive } from "./Groups/Http.js"
+import { HttpPeopleLive } from "./People/Http.js"
+
+const ApiLive = Layer.provide(HttpApiBuilder.api(Api), [
+  HttpAccountsLive,
+  HttpGroupsLive,
+  HttpPeopleLive
+])
+
+export const HttpLive = HttpApiBuilder.serve(HttpMiddleware.logger).pipe(
+  Layer.provide(HttpApiSwagger.layer()),
+  Layer.provide(HttpApiBuilder.middlewareOpenApi()),
+  Layer.provide(HttpApiBuilder.middlewareCors()),
+  Layer.provide(ApiLive),
+  HttpServer.withLogAddress,
+  Layer.provide(NodeHttpServer.layer(createServer, { port: 3000 }))
+)
+
+
+
+---
+File: /http-server/src/main.ts
+---
+
+import { NodeRuntime } from "@effect/platform-node"
+import { Layer } from "effect"
+import { HttpLive } from "./Http.js"
+import { TracingLive } from "./Tracing.js"
+
+HttpLive.pipe(Layer.provide(TracingLive), Layer.launch, NodeRuntime.runMain)
+
+
+
+---
+File: /http-server/src/People.ts
+---
+
+import { SqlClient } from "@effect/sql"
+import { Effect, Option, pipe } from "effect"
+import type { GroupId } from "./Domain/Group.js"
+import type { PersonId } from "./Domain/Person.js"
+import { Person, PersonNotFound } from "./Domain/Person.js"
+import { policyRequire } from "./Domain/Policy.js"
+import { PeopleRepo } from "./People/Repo.js"
+import { SqlLive } from "./Sql.js"
+
+export class People extends Effect.Service<People>()("People", {
+  effect: Effect.gen(function*() {
+    const repo = yield* PeopleRepo
+    const sql = yield* SqlClient.SqlClient
+
+    const create = (groupId: GroupId, person: typeof Person.jsonCreate.Type) =>
+      pipe(
+        repo.insert(
+          Person.insert.make({
+            ...person,
+            groupId
+          })
+        ),
+        Effect.withSpan("People.create", { attributes: { person, groupId } }),
+        policyRequire("Person", "create")
+      )
+
+    const findById = (id: PersonId) =>
+      pipe(
+        repo.findById(id),
+        Effect.withSpan("People.findById", { attributes: { id } }),
+        policyRequire("Person", "read")
+      )
+
+    const with_ = <B, E, R>(
+      id: PersonId,
+      f: (person: Person) => Effect.Effect<B, E, R>
+    ): Effect.Effect<B, E | PersonNotFound, R> =>
+      pipe(
+        repo.findById(id),
+        Effect.flatMap(
+          Option.match({
+            onNone: () => Effect.fail(new PersonNotFound({ id })),
+            onSome: Effect.succeed
+          })
+        ),
+        Effect.flatMap(f),
+        sql.withTransaction,
+        Effect.catchTag("SqlError", (e) => Effect.die(e)),
+        Effect.withSpan("People.with", { attributes: { id } })
+      )
+
+    return { create, findById, with: with_ } as const
+  }),
+  dependencies: [SqlLive, PeopleRepo.Default]
+}) {}
+
+
+
+---
+File: /http-server/src/Sql.ts
+---
+
+import { NodeContext } from "@effect/platform-node"
+import { SqlClient } from "@effect/sql"
+import { SqliteClient, SqliteMigrator } from "@effect/sql-sqlite-node"
+import { identity, Layer } from "effect"
+import { fileURLToPath } from "url"
+import { makeTestLayer } from "./lib/Layer.js"
+
+const ClientLive = SqliteClient.layer({
+  filename: "data/db.sqlite"
+})
+
+const MigratorLive = SqliteMigrator.layer({
+  loader: SqliteMigrator.fromFileSystem(
+    fileURLToPath(new URL("./migrations", import.meta.url))
+  )
+}).pipe(Layer.provide(NodeContext.layer))
+
+export const SqlLive = MigratorLive.pipe(Layer.provideMerge(ClientLive))
+
+export const SqlTest = makeTestLayer(SqlClient.SqlClient)({
+  withTransaction: identity
+})
+
+
+
+---
+File: /http-server/src/Tracing.ts
+---
+
+import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http"
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
+import { Config, Effect, Layer, Redacted } from "effect"
+
+export const TracingLive = Layer.unwrapEffect(
+  Effect.gen(function*() {
+    const apiKey = yield* Config.option(Config.redacted("HONEYCOMB_API_KEY"))
+    const dataset = yield* Config.withDefault(
+      Config.string("HONEYCOMB_DATASET"),
+      "effect-http-play"
+    )
+    if (apiKey._tag === "None") {
+      const endpoint = yield* Config.option(
+        Config.string("OTEL_EXPORTER_OTLP_ENDPOINT")
+      )
+      if (endpoint._tag === "None") {
+        return Layer.empty
+      }
+      return NodeSdk.layer(() => ({
+        resource: {
+          serviceName: dataset
+        },
+        spanProcessor: new BatchSpanProcessor(
+          new OTLPTraceExporter({ url: `${endpoint.value}/v1/traces` })
+        )
+      }))
+    }
+
+    const headers = {
+      "X-Honeycomb-Team": Redacted.value(apiKey.value),
+      "X-Honeycomb-Dataset": dataset
+    }
+
+    return NodeSdk.layer(() => ({
+      resource: {
+        serviceName: dataset
+      },
+      spanProcessor: new BatchSpanProcessor(
+        new OTLPTraceExporter({
+          url: "https://api.honeycomb.io/v1/traces",
+          headers
+        })
+      )
+    }))
+  })
+)
+
+
+
+---
+File: /http-server/src/Uuid.ts
+---
+
+import { Effect, Layer } from "effect"
+import * as Api from "uuid"
+
+export class Uuid extends Effect.Service<Uuid>()("Uuid", {
+  succeed: {
+    generate: Effect.sync(() => Api.v7())
+  }
+}) {
+  static Test = Layer.succeed(
+    Uuid,
+    new Uuid({
+      generate: Effect.succeed("test-uuid")
+    })
+  )
+}
+
+
+
+---
+File: /http-server/vitest.config.ts
+---
+
+import * as Path from "node:path"
+import { defineConfig } from "vitest/config"
+
+export default defineConfig({
+  test: {
+    alias: {
+      app: Path.join(__dirname, "src")
+    }
+  }
+})
+

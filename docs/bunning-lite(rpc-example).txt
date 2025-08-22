@@ -1,0 +1,4195 @@
+Directory Structure:
+
+└── ./
+    ├── server
+    │   ├── src
+    │   │   ├── domain
+    │   │   │   ├── Auth.ts
+    │   │   │   ├── Bazaar.ts
+    │   │   │   ├── Bunnings.ts
+    │   │   │   └── Rpc.ts
+    │   │   ├── Auth.ts
+    │   │   ├── Bazaar.ts
+    │   │   ├── Bunnings.ts
+    │   │   ├── main.ts
+    │   │   ├── Playwright.ts
+    │   │   ├── Rpc.ts
+    │   │   ├── Sessions.ts
+    │   │   └── Tracing.ts
+    │   └── tsup.config.ts
+    ├── src
+    │   ├── App
+    │   │   ├── atoms.ts
+    │   │   └── InstallButton.tsx
+    │   ├── atoms
+    │   │   └── kvs.ts
+    │   ├── Favorites
+    │   │   ├── atoms.ts
+    │   │   ├── Button.tsx
+    │   │   └── Events.ts
+    │   ├── lib
+    │   │   ├── useScrollBottom.ts
+    │   │   └── utils.ts
+    │   ├── Product
+    │   │   ├── atoms.ts
+    │   │   ├── FulfillmentBadge.tsx
+    │   │   └── Listing.tsx
+    │   ├── routes
+    │   │   ├── product
+    │   │   │   └── $id.tsx
+    │   │   ├── __root.tsx
+    │   │   └── index.tsx
+    │   ├── Search
+    │   │   ├── atoms.ts
+    │   │   ├── Filters.tsx
+    │   │   └── SearchResults.tsx
+    │   ├── Stores
+    │   │   ├── atoms.ts
+    │   │   └── Selector.tsx
+    │   ├── App.tsx
+    │   ├── EventLog.ts
+    │   ├── Events.ts
+    │   ├── Favorites.ts
+    │   ├── index.css
+    │   ├── main.tsx
+    │   ├── Router.ts
+    │   ├── routeTree.gen.ts
+    │   ├── RpcClient.ts
+    │   ├── sw.ts
+    │   ├── Tracing.ts
+    │   └── vite-env.d.ts
+    ├── index.html
+    └── vite.config.ts
+
+
+
+---
+File: /server/src/domain/Auth.ts
+---
+
+import * as Schema from "effect/Schema"
+import { CurrentSession } from "./Bunnings"
+import * as RpcMiddleware from "@effect/rpc/RpcMiddleware"
+
+export class Unauthorized extends Schema.TaggedError<Unauthorized>()(
+  "Unauthorized",
+  {},
+) {}
+
+export class AuthMiddleware extends RpcMiddleware.Tag<AuthMiddleware>()(
+  "app/Auth/AuthMiddleware",
+  {
+    provides: CurrentSession,
+    failure: Unauthorized,
+    requiredForClient: true,
+  },
+) {}
+
+
+
+---
+File: /server/src/domain/Bazaar.ts
+---
+
+import * as S from "effect/Schema"
+
+class RatingDistribution extends S.Class<RatingDistribution>(
+  "RatingDistribution",
+)({
+  RatingValue: S.Number,
+  Count: S.Number,
+}) {}
+
+class ReviewStatistics extends S.Class<ReviewStatistics>("ReviewStatistics")({
+  AverageOverallRating: S.optionalWith(S.Number, {
+    default: () => 0,
+    nullable: true,
+  }),
+  FeaturedReviewCount: S.Number,
+  RatingsOnlyReviewCount: S.Number,
+  TotalReviewCount: S.Number,
+  RatingDistribution: S.Array(RatingDistribution),
+}) {}
+
+export class ReviewStats extends S.Class<ReviewStats>("ReviewStats")({
+  Id: S.String,
+  ReviewStatistics: ReviewStatistics,
+  TotalReviewCount: S.Number,
+  FilteredReviewStatistics: ReviewStatistics,
+}) {}
+
+export class ProductsResponse extends S.Class<ProductsResponse>(
+  "ProductsResponse",
+)({
+  Results: S.Array(ReviewStats),
+}) {}
+
+// ratings
+
+export class ProductReview extends S.Class<ProductReview>("ProductReview")({
+  Id: S.String,
+  UserLocation: S.Union(S.Null, S.String),
+  IsFeatured: S.Boolean,
+  Rating: S.Number,
+  ModerationStatus: S.String,
+  SubmissionTime: S.DateTimeUtc,
+  ReviewText: S.String,
+  Title: S.NullOr(S.String),
+  UserNickname: S.Union(S.Null, S.String),
+}) {}
+
+export class ReviewsResponse extends S.Class<ReviewsResponse>(
+  "ReviewsResponse",
+)({
+  Limit: S.Number,
+  Offset: S.Number,
+  TotalResults: S.Number,
+  Results: S.Chunk(ProductReview),
+}) {}
+
+export class ReviewsWithStats extends S.Class<ReviewsWithStats>(
+  "ReviewsWithStats",
+)({
+  reviews: S.Array(ProductReview),
+  stats: ReviewStats,
+}) {}
+
+
+
+---
+File: /server/src/domain/Bunnings.ts
+---
+
+import * as Context from "effect/Context"
+import * as DateTime from "effect/DateTime"
+import * as Effect from "effect/Effect"
+import * as ParseResult from "effect/ParseResult"
+import * as Schema from "effect/Schema"
+
+export class CurrentSession extends Context.Tag(
+  "domain/Bunnings/CurrentSession",
+)<CurrentSession, Session>() {}
+
+export class SessionLocation extends Schema.TaggedClass<SessionLocation>(
+  "domain/Bunnings/SessionLocation",
+)("Set", {
+  region: Schema.String,
+  code: Schema.String,
+  city: Schema.String,
+  country: Schema.String,
+  state: Schema.String,
+  website: Schema.String,
+}) {
+  static fromStore(store: Store) {
+    return new SessionLocation({
+      region: store.pricingRegion,
+      code: store.name,
+      city: store.displayName,
+      country: store.address.country.name,
+      state: store.storeRegion,
+      website: store.address.country.isocode,
+    })
+  }
+
+  get lowerRegion() {
+    return this.region.toLowerCase()
+  }
+
+  httpHeaders = {
+    locationcode: this.code,
+    "x-region": this.region,
+    country: this.website,
+    currency: "NZD",
+    locale: "en_NZ",
+  }
+
+  searchContext = {
+    city: this.city,
+    country: this.country,
+    region: this.region,
+    state: this.state,
+    website: this.website,
+  }
+}
+
+export class SessionUnsetLocation extends Schema.TaggedClass<SessionUnsetLocation>(
+  "domain/Bunnings/SessionUnsetLocation",
+)("Unset", {
+  country: Schema.String,
+  website: Schema.String,
+  code: Schema.String,
+  region: Schema.String,
+  state: Schema.String,
+}) {
+  static default = new SessionUnsetLocation({
+    country: "New Zealand",
+    website: "NZ",
+    code: "9489",
+    region: "NI_Zone_9",
+    state: "NI",
+  })
+
+  get lowerRegion() {
+    return this.region.toLowerCase()
+  }
+
+  httpHeaders = {
+    country: this.website,
+    currency: "NZD",
+    locale: "en_NZ",
+  }
+
+  searchContext = {
+    country: this.country,
+    website: this.website,
+  }
+}
+
+export class SessionToken extends Schema.Class<SessionToken>(
+  "domain/Bunnings/SessionToken",
+)({
+  expires: Schema.DateTimeUtcFromNumber,
+  token: Schema.String,
+}) {
+  static fromJson = Schema.decode(Schema.parseJson(SessionToken))
+}
+
+export class Session extends Schema.Class<Session>("domain/Bunnings/Session")({
+  id: Schema.String,
+  token: SessionToken,
+  location: Schema.Union(SessionLocation, SessionUnsetLocation),
+}) {
+  get expired() {
+    return this.token.expires.pipe(
+      DateTime.subtract({ hours: 1 }),
+      DateTime.unsafeIsPast,
+    )
+  }
+
+  withLocation(location: SessionLocation) {
+    return new Session({
+      ...this,
+      location,
+    })
+  }
+}
+
+const ImageUrl = Schema.optionalWith(Schema.String, {
+  default: () => "https://www.bunnings.co.nz/static/icons/notFoundImage.svg",
+})
+
+export class SearchResult extends Schema.Class<SearchResult>("SearchResult")({
+  thumbnailimageurl: ImageUrl,
+  isactive: Schema.String,
+  ratingcount: Schema.optionalWith(Schema.Number, {
+    default: () => 0,
+  }),
+  permanentid: Schema.String,
+  title: Schema.String,
+  productroutingurl: Schema.String,
+  rating: Schema.optionalWith(Schema.Number, {
+    default: () => 0,
+  }),
+  size: Schema.Number,
+  name: Schema.String,
+  price: Schema.Number,
+  imageurl: ImageUrl,
+  uri: Schema.String,
+}) {
+  get asBaseInfo() {
+    return new ProductBaseInfo({
+      id: this.permanentid,
+      url: "https://bunnings.co.nz" + this.productroutingurl,
+      title: this.title,
+      images: [
+        new ImageElement({
+          url: this.imageurl,
+          thumbnailUrl: this.thumbnailimageurl,
+          mime: "image/jpeg",
+          sequence: "0",
+        }),
+      ],
+      price: this.price,
+      numberOfReviews: this.ratingcount,
+      rating: this.rating,
+    })
+  }
+}
+
+export class SearchResultWrap extends Schema.Class<SearchResultWrap>(
+  "SearchResultWrap",
+)({
+  raw: SearchResult,
+}) {}
+
+export class ImageElement extends Schema.Class<ImageElement>("ImageElement")({
+  altText: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+  format: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+  imageType: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+  mime: Schema.String,
+  sequence: Schema.String,
+  thumbnailUrl: ImageUrl,
+  url: ImageUrl,
+  videoId: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+}) {}
+
+export class ProductBaseInfo extends Schema.Class<ProductBaseInfo>(
+  "ProductBaseInfo",
+)({
+  id: Schema.String,
+  title: Schema.String,
+  url: Schema.String,
+  images: Schema.NonEmptyArray(ImageElement),
+  price: Schema.Number,
+  numberOfReviews: Schema.Number,
+  rating: Schema.Number,
+}) {}
+
+export class FacetValue extends Schema.Class<FacetValue>("FacetValue")({
+  start: Schema.Number,
+  end: Schema.Number,
+  endInclusive: Schema.Boolean,
+}) {}
+
+export class Facet extends Schema.Class<Facet>("Facet")({
+  facetId: Schema.String,
+  values: Schema.Array(FacetValue),
+}) {}
+
+export class SearchResponseDataRaw extends Schema.Class<SearchResponseDataRaw>(
+  "SearchResponseDataRaw",
+)({
+  totalCount: Schema.Number,
+  facets: Schema.Array(Facet),
+  results: Schema.Array(SearchResultWrap),
+}) {}
+
+export class SearchResponseData extends Schema.Class<SearchResponseData>(
+  "SearchResponseData",
+)({
+  totalCount: Schema.Number,
+  facets: Schema.Array(Facet),
+  results: Schema.Array(ProductBaseInfo),
+}) {}
+
+export const SearchResponseDataRemapped = Schema.transformOrFail(
+  Schema.Object,
+  SearchResponseDataRaw,
+  {
+    decode(data: any) {
+      return Effect.map(CurrentSession, (session) => ({
+        totalCount: data.totalCount,
+        facets: data.facets.map((facet: any) => ({
+          ...facet,
+          facetId: facet.facetId.replace(`_${session.location.code}`, ""),
+        })),
+        results: data.results.map((result: any) => ({
+          raw: {
+            ...result.raw,
+            price: result.raw[`price_${session.location.code}`],
+          },
+        })),
+      }))
+    },
+    encode(toI) {
+      return ParseResult.succeed(toI)
+    },
+  },
+).pipe(
+  Schema.transform(SearchResponseData, {
+    decode(fromA) {
+      return new SearchResponseData({
+        ...fromA,
+        results: fromA.results.map((_) => _.raw.asBaseInfo),
+      })
+    },
+    encode(_toI) {
+      throw new Error("Not implemented")
+    },
+  }),
+)
+
+export const SearchResponse = Schema.Struct({
+  data: SearchResponseDataRemapped,
+})
+
+export class GuideDocument extends Schema.Class<GuideDocument>("GuideDocument")(
+  {
+    altText: Schema.optionalWith(Schema.String, { nullable: true }),
+    docType: Schema.String,
+    mime: Schema.String,
+    sequence: Schema.String,
+    size: Schema.Number,
+    thumbnailUrl: ImageUrl,
+    url: Schema.String,
+  },
+) {}
+
+export class DataFeature extends Schema.Class<DataFeature>("DataFeature")({
+  description: Schema.String,
+  pointers: Schema.optional(Schema.Array(Schema.String)),
+}) {}
+
+export class Product extends Schema.Class<Product>("Product")({
+  depth: Schema.String,
+  height: Schema.String,
+  width: Schema.String,
+  label: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+}) {}
+
+export class Package extends Schema.Class<Package>("Package")({
+  height: Schema.String,
+  length: Schema.String,
+  width: Schema.String,
+}) {}
+
+export class Dimension extends Schema.Class<Dimension>("Dimension")({
+  packages: Schema.optionalWith(Schema.Array(Package), {
+    default: () => [],
+  }),
+  product: Schema.optionalWith(Schema.Array(Product), {
+    default: () => [],
+  }),
+  dimensionTerm: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+}) {}
+
+export class FeatureValue extends Schema.Class<FeatureValue>("FeatureValue")({
+  value: Schema.String,
+}) {}
+
+export class FeatureElement extends Schema.Class<FeatureElement>(
+  "FeatureElement",
+)({
+  code: Schema.String,
+  comparable: Schema.Boolean,
+  featureValues: Schema.Array(FeatureValue),
+  name: Schema.String,
+  range: Schema.Boolean,
+}) {}
+
+export class Classification extends Schema.Class<Classification>(
+  "Classification",
+)({
+  features: Schema.Array(FeatureElement),
+  code: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+  name: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+}) {}
+
+export class BrandImage extends Schema.Class<BrandImage>("BrandImage")({
+  mime: Schema.String,
+  sequence: Schema.String,
+  thumbnailUrl: ImageUrl,
+  url: ImageUrl,
+  disclaimer: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+}) {}
+
+export class Brand extends Schema.Class<Brand>("Brand")({
+  brandUrl: Schema.String,
+  code: Schema.String,
+  image: Schema.optional(BrandImage),
+  isLeadingBrand: Schema.Boolean,
+  isMarketPlaceBrand: Schema.Boolean,
+  isTradeBrand: Schema.Boolean,
+  name: Schema.String,
+}) {}
+
+export class ProductValue extends Schema.Class<ProductValue>("ProductValue")({
+  displayOrder: Schema.Number,
+  name: Schema.String,
+  value: Schema.String,
+}) {}
+
+export class BasePaint extends Schema.Class<BasePaint>("BasePaint")({
+  colorName: Schema.String,
+}) {}
+
+export class Selected extends Schema.Class<Selected>("Selected")({
+  basePaint: Schema.optional(Schema.Union(BasePaint, Schema.Null)),
+  code: Schema.String,
+  itemNumber: Schema.String,
+  productValues: Schema.Array(ProductValue),
+  routingUrl: Schema.String,
+}) {}
+
+export class BaseOption extends Schema.Class<BaseOption>("BaseOption")({
+  selected: Selected,
+  variantType: Schema.String,
+}) {}
+
+export class AllCategory extends Schema.Class<AllCategory>("AllCategory")({
+  code: Schema.String,
+  displayName: Schema.String,
+  internalPath: Schema.String,
+  level: Schema.Number,
+  workShopCategory: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+}) {}
+
+export class ProductInfo extends Schema.Class<ProductInfo>("ProductInfo")({
+  allCategories: Schema.Array(AllCategory),
+  availableForDelivery: Schema.Boolean,
+  averageRating: Schema.optionalWith(Schema.Number, {
+    default: () => 0,
+  }),
+  baseOptions: Schema.Array(BaseOption),
+  bestSeller: Schema.Boolean,
+  brand: Brand,
+  defaultVariant: Schema.Boolean,
+  dimension: Dimension,
+  feature: DataFeature,
+  images: Schema.NonEmptyArray(ImageElement),
+  instorePickup: Schema.Boolean,
+  isAREnabled: Schema.Boolean,
+  isActive: Schema.Boolean,
+  isAgeRestricted: Schema.Boolean,
+  isDangerousGood: Schema.Boolean,
+  isPOAProduct: Schema.Boolean,
+  isSpecialProduct: Schema.Boolean,
+  isTradeOnly: Schema.Boolean,
+  isWorkflowRequired: Schema.Boolean,
+  itemNumber: Schema.String,
+  manufacturer: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+  name: Schema.String,
+  newArrival: Schema.Boolean,
+  numberOfReviews: Schema.Number,
+  productLinks: Schema.Array(Schema.String),
+  purchasable: Schema.Boolean,
+  summary: Schema.String,
+  sustainabilityInformation: Schema.String,
+  transactable: Schema.Boolean,
+  unitofprice: Schema.String,
+  url: Schema.String,
+  visible: Schema.Boolean,
+  warrantyReturns: Schema.String,
+  weight: Schema.optional(Schema.String),
+  guideDocument: Schema.optional(
+    Schema.Union(Schema.Array(GuideDocument), Schema.Null),
+  ),
+}) {}
+
+export class ProductResponse extends Schema.Class<ProductResponse>(
+  "ProductResponse",
+)({
+  data: ProductInfo,
+}) {}
+
+export class PriceInfo extends Schema.Class<PriceInfo>("PriceInfo")({
+  currencyIso: Schema.String,
+  formattedValue: Schema.String,
+  priceAvailable: Schema.Boolean,
+  priceType: Schema.String,
+  value: Schema.Number,
+}) {}
+
+export class PriceResponse extends Schema.Class<PriceResponse>("PriceResponse")(
+  {
+    data: PriceInfo,
+  },
+) {}
+
+export class ProductPriceInfo extends Schema.Class<ProductPriceInfo>(
+  "ProductPriceInfo",
+)({
+  info: ProductInfo,
+  price: PriceInfo,
+}) {
+  get asBaseInfo() {
+    return new ProductBaseInfo({
+      id: this.info.itemNumber,
+      url:
+        "https://bunnings.co.nz" + this.info.baseOptions[0].selected.routingUrl,
+      title: this.info.name,
+      images: this.info.images,
+      price: this.price.value,
+      numberOfReviews: this.info.numberOfReviews,
+      rating: this.info.averageRating,
+    })
+  }
+}
+
+class GeoPoint extends Schema.Class<GeoPoint>("GeoPoint")({
+  latitude: Schema.Number,
+  longitude: Schema.Number,
+}) {}
+
+class Country extends Schema.Class<Country>("Country")({
+  isocode: Schema.String,
+  name: Schema.String,
+}) {}
+
+class Address extends Schema.Class<Address>("Address")({
+  billingAddress: Schema.Boolean,
+  country: Country,
+  creationtime: Schema.String,
+  defaultAddress: Schema.Boolean,
+  email: Schema.String,
+  fax: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+  firstName: Schema.String,
+  formattedAddress: Schema.String,
+  id: Schema.String,
+  isPoBoxAddress: Schema.Boolean,
+  line1: Schema.String,
+  line2: Schema.optional(Schema.Union(Schema.Null, Schema.String)),
+  phone: Schema.String,
+  postalCode: Schema.String,
+  shippingAddress: Schema.Boolean,
+  town: Schema.String,
+  visibleInAddressBook: Schema.Boolean,
+}) {}
+
+export class Store extends Schema.Class<Store>("Store")({
+  address: Address,
+  displayName: Schema.String,
+  formattedDistance: Schema.String,
+  geoPoint: GeoPoint,
+  isActiveLocation: Schema.Boolean,
+  mapUrl: Schema.String,
+  name: Schema.String,
+  pricingRegion: Schema.String,
+  storeRegion: Schema.String,
+  storeZone: Schema.String,
+  timeZone: Schema.String,
+  type: Schema.String,
+  url: Schema.String,
+  urlRegion: Schema.String,
+}) {}
+
+class Pagination extends Schema.Class<Pagination>("Pagination")({
+  currentPage: Schema.Number,
+  pageSize: Schema.Number,
+  totalPages: Schema.Number,
+  totalResults: Schema.Number,
+}) {}
+
+export class StoresData extends Schema.Class<StoresData>("StoresData")({
+  boundEastLongitude: Schema.Number,
+  boundNorthLatitude: Schema.Number,
+  boundSouthLatitude: Schema.Number,
+  boundWestLongitude: Schema.Number,
+  pagination: Pagination,
+  sourceLatitude: Schema.Number,
+  sourceLongitude: Schema.Number,
+  stores: Schema.Chunk(Store),
+}) {}
+
+export class StoresResponse extends Schema.Class<StoresResponse>(
+  "StoresResponse",
+)({
+  data: StoresData,
+}) {}
+
+// fullfillment
+
+export class InStorePickUpData extends Schema.Class<InStorePickUpData>(
+  "InStorePickUpData",
+)({
+  inStoreStockMsg: Schema.String,
+  stock: Schema.optionalWith(Schema.Number, { default: () => 0 }),
+}) {}
+
+export class FulfillmentInfo extends Schema.Class<FulfillmentInfo>(
+  "FulfillmentInfo",
+)({
+  addToCartEnabled: Schema.Boolean,
+  availableInStore: Schema.Boolean,
+  disableStockVisibility: Schema.Boolean,
+  driveNCollect: Schema.String,
+  inStorePickUpData: InStorePickUpData,
+  isActive: Schema.Boolean,
+  isSpecialProduct: Schema.Boolean,
+  poa: Schema.Boolean,
+}) {}
+
+export class FulfillmentResponse extends Schema.Class<FulfillmentResponse>(
+  "FulfillmentResponse",
+)({
+  data: FulfillmentInfo,
+}) {}
+
+// item location
+
+export class InStoreLocation extends Schema.Class<InStoreLocation>(
+  "InStoreLocation",
+)({
+  aisle: Schema.String,
+  bay: Schema.String,
+  sequence: Schema.String,
+}) {}
+
+export class ItemLocations extends Schema.Class<ItemLocations>("ItemLocations")(
+  {
+    inStoreLocations: Schema.Array(InStoreLocation),
+  },
+) {}
+
+export class ItemLocationResponse extends Schema.Class<ItemLocationResponse>(
+  "ItemLocationResponse",
+)({
+  data: Schema.Array(ItemLocations),
+}) {}
+
+export class FulfillmentInfoWithLocation extends Schema.Class<FulfillmentInfoWithLocation>(
+  "FulfillmentInfoWithLocation",
+)({
+  fulfillment: FulfillmentInfo,
+  location: Schema.Option(InStoreLocation),
+}) {
+  get isAvailable() {
+    return (
+      this.fulfillment.inStorePickUpData.inStoreStockMsg ===
+      "itemsAvailableInStock"
+    )
+  }
+}
+
+
+
+---
+File: /server/src/domain/Rpc.ts
+---
+
+import { AuthMiddleware } from "./Auth"
+import {
+  FulfillmentInfoWithLocation,
+  ProductPriceInfo,
+  SearchResponseData,
+  Session,
+  SessionLocation,
+  Store,
+} from "./Bunnings"
+import { ProductReview, ReviewStats } from "./Bazaar"
+import * as RpcGroup from "@effect/rpc/RpcGroup"
+import * as Rpc from "@effect/rpc/Rpc"
+import * as Schema from "effect/Schema"
+
+export class Rpcs extends RpcGroup.make(
+  Rpc.make("login", {
+    payload: {
+      location: Schema.Option(SessionLocation),
+    },
+    success: Session,
+  }),
+  Rpc.make("search", {
+    payload: {
+      query: Schema.String,
+      offset: Schema.Number,
+      priceRange: Schema.Option(Schema.Tuple(Schema.Number, Schema.Number)),
+      ratingRange: Schema.Option(Schema.Tuple(Schema.Number, Schema.Number)),
+    },
+    success: SearchResponseData,
+  }),
+  Rpc.make("productInfo", {
+    payload: {
+      id: Schema.String,
+    },
+    success: ProductPriceInfo,
+  }),
+  Rpc.make("productReviewStats", {
+    payload: {
+      id: Schema.String,
+    },
+    success: Schema.Option(ReviewStats),
+  }),
+  Rpc.make("productReviews", {
+    payload: {
+      id: Schema.String,
+    },
+    stream: true,
+    success: ProductReview,
+  }),
+  Rpc.make("fulfillment", {
+    payload: {
+      id: Schema.String,
+    },
+    success: Schema.Option(FulfillmentInfoWithLocation),
+  }),
+  Rpc.make("stores", {
+    payload: {
+      latitude: Schema.Number,
+      longitude: Schema.Number,
+    },
+    stream: true,
+    success: Store,
+  }),
+).middleware(AuthMiddleware) {}
+
+
+
+---
+File: /server/src/Auth.ts
+---
+
+import { Effect, Layer } from "effect"
+import { AuthMiddleware, Unauthorized } from "./domain/Auth"
+import { Sessions } from "./Sessions"
+
+export const AuthLayer = Layer.effect(
+  AuthMiddleware,
+  Effect.gen(function* () {
+    const sessions = yield* Sessions
+
+    return Effect.fn("AuthMiddleware")(function* ({ headers }) {
+      const sessionId = headers["session-id"]
+      if (!sessionId || sessionId.trim() === "") {
+        return yield* new Unauthorized()
+      }
+      return yield* sessions
+        .get(sessionId)
+        .pipe(Effect.mapError(() => new Unauthorized()))
+    })
+  }),
+).pipe(Layer.provide(Sessions.Default))
+
+
+
+---
+File: /server/src/Bazaar.ts
+---
+
+import {
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "@effect/platform"
+import { Array, Chunk, Effect, Option, Stream } from "effect"
+import { ProductsResponse, ReviewsResponse } from "./domain/Bazaar"
+import { NodeHttpClient } from "@effect/platform-node"
+
+export class Bazaar extends Effect.Service<Bazaar>()("api/Bazaar", {
+  dependencies: [NodeHttpClient.layerUndici],
+  effect: Effect.gen(function* () {
+    const client = (yield* HttpClient.HttpClient).pipe(
+      HttpClient.mapRequest(
+        HttpClientRequest.prependUrl("https://api.bazaarvoice.com/data"),
+      ),
+    )
+
+    const overview = (id: string) =>
+      client
+        .get("/products.json", {
+          urlParams: {
+            resource: "products",
+            filter: `id:eq:${id}`,
+            filter_reviews: "contentlocale:eq:en*,en_NZ,en_NZ",
+            filter_questions: "contentlocale:eq:en*,en_NZ,en_NZ",
+            filter_answers: "contentlocale:eq:en*,en_NZ,en_NZ",
+            filter_reviewcomments: "contentlocale:eq:en*,en_NZ,en_NZ",
+            filteredstats: "Reviews, questions, answers",
+            stats: "Reviews, questions, answers",
+            passkey: "caUZMUAJ5mm8n5r7EtVHRt5QhZFVEPcUKge0N3CDWAZFc",
+            apiversion: "5.5",
+            displaycode: "10414-en_nz",
+          },
+        })
+        .pipe(
+          Effect.flatMap(HttpClientResponse.schemaBodyJson(ProductsResponse)),
+          Effect.map((_) => Array.head(_.Results)),
+          Effect.withSpan("Bazaar.overview", { attributes: { id } }),
+        )
+
+    const reviewsPage = (id: string, offset: number) =>
+      client
+        .get("/reviews.json", {
+          urlParams: {
+            resource: "reviews",
+            action: "REVIEWS_N_STATS",
+            filter: [
+              `productid:eq:${id}`,
+              "contentlocale:eq:en*,en_NZ,en_NZ",
+              "isratingsonly:eq:false",
+            ],
+            filter_reviews: "contentlocale:eq:en*,en_NZ,en_NZ",
+            filteredstats: "reviews",
+            Stats: "Reviews",
+            limit: 9,
+            offset: offset,
+            limit_comments: 3,
+            sort: "helpfulness:desc,totalpositivefeedbackcount:desc",
+            passkey: "caUZMUAJ5mm8n5r7EtVHRt5QhZFVEPcUKge0N3CDWAZFc",
+            apiversion: "5.5",
+            displaycode: "10414-en_nz",
+          },
+        })
+        .pipe(
+          Effect.flatMap(HttpClientResponse.schemaBodyJson(ReviewsResponse)),
+          Effect.withSpan("Bazaar.reviewsPage", { attributes: { id, offset } }),
+        )
+
+    const reviews = (id: string) =>
+      Stream.paginateChunkEffect(0, (offset) =>
+        reviewsPage(id, offset).pipe(
+          Effect.map(
+            (res) =>
+              [
+                res.Results,
+                Option.some(res.Results.length + offset).pipe(
+                  Option.filter((_) => _ < res.TotalResults),
+                ),
+              ] as const,
+          ),
+        ),
+      ).pipe(Stream.withSpan("Bazaar.reviews", { attributes: { id } }))
+
+    const allReviews = (id: string) =>
+      Stream.runCollect(reviews(id)).pipe(
+        Effect.map(Chunk.toReadonlyArray),
+        Effect.withSpan("Bazaar.allReviews", { attributes: { id } }),
+      )
+
+    return { overview, reviews, allReviews } as const
+  }),
+}) {}
+
+
+
+---
+File: /server/src/Bunnings.ts
+---
+
+import { Array as Arr, Effect, Option, Stream } from "effect"
+import {
+  CurrentSession,
+  FulfillmentResponse,
+  ItemLocationResponse,
+  PriceResponse,
+  ProductPriceInfo,
+  ProductResponse,
+  SearchResponse,
+  Session,
+  SessionToken,
+  SessionUnsetLocation,
+  StoresResponse,
+} from "./domain/Bunnings"
+import {
+  HttpBody,
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "@effect/platform"
+import { NodeHttpClient } from "@effect/platform-node"
+import { Page } from "./Playwright"
+
+export class Bunnings extends Effect.Service<Bunnings>()("api/Bunnings", {
+  dependencies: [NodeHttpClient.layerUndici],
+  effect: Effect.gen(function* () {
+    const defaultClient = yield* HttpClient.HttpClient
+
+    const makeSession = Effect.fn("Bunnings.makeSession")(function* (
+      id: string,
+    ) {
+      yield* Page.with((page) => page.goto("https://www.bunnings.co.nz/"))
+
+      let tokenCookie: { value: string } | undefined = undefined
+      while (!tokenCookie) {
+        tokenCookie = yield* Page.with((page) =>
+          page
+            .context()
+            .cookies()
+            .then((_) => _.find((_) => _.name === "guest-token-storage")),
+        )
+      }
+      const token = yield* SessionToken.fromJson(tokenCookie.value)
+      return new Session({
+        id,
+        token,
+        location: SessionUnsetLocation.default,
+      })
+    }, Effect.provide(Page.Default))
+
+    const apiClient = Effect.fnUntraced(function* (version = "v1") {
+      const session = yield* CurrentSession
+      return defaultClient.pipe(
+        HttpClient.mapRequest(
+          HttpClientRequest.prependUrl(
+            `https://api.prod.bunnings.com.au/${version}`,
+          ),
+        ),
+        HttpClient.mapRequest(
+          HttpClientRequest.bearerToken(session.token.token),
+        ),
+        HttpClient.mapRequest(
+          HttpClientRequest.setHeaders({
+            accept: "application/json, text/plain, */*",
+            "accept-language":
+              "en-AU,en-NZ;q=0.9,en-GB;q=0.8,en-US;q=0.7,en;q=0.6,de;q=0.5",
+            clientid: "mHPVWnzuBkrW7rmt56XGwKkb5Gp9BJMk",
+            ...session.location.httpHeaders,
+            stream: "RETAIL",
+            userid: "anonymous",
+          }),
+        ),
+      )
+    })
+
+    const search = Effect.fnUntraced(
+      function* (options: {
+        readonly query: string
+        readonly offset: number
+        readonly priceRange: Option.Option<readonly [number, number]>
+        readonly ratingRange: Option.Option<readonly [number, number]>
+      }) {
+        const client = yield* apiClient()
+        const session = yield* CurrentSession
+        const res = yield* client.post("/coveo/search", {
+          body: HttpBody.unsafeJson(searchPayload(session, options)),
+        })
+        const results =
+          yield* HttpClientResponse.schemaBodyJson(SearchResponse)(res)
+        return results.data
+      },
+      (effect, options) =>
+        Effect.withSpan(effect, "Bunnings.search", {
+          attributes: { ...options },
+        }),
+    )
+
+    const productInfo = Effect.fn("Bunnings.productInfo")(function* (
+      id: string,
+    ) {
+      const client = yield* apiClient()
+      const res = yield* client.get(`/products/${id}`)
+      const result =
+        yield* HttpClientResponse.schemaBodyJson(ProductResponse)(res)
+      return result.data
+    })
+
+    const priceInfo = Effect.fn("Bunnings.priceInfo")(function* (id: string) {
+      const client = yield* apiClient("v2")
+      const res = yield* client.get(`/products/${id}/priceInfo`)
+      const result =
+        yield* HttpClientResponse.schemaBodyJson(PriceResponse)(res)
+      return result.data
+    })
+
+    const productInfoWithPrice = Effect.fn("Bunnings.productInfoWithPrice")(
+      function* (id: string) {
+        const [info, price] = yield* Effect.all(
+          [productInfo(id), priceInfo(id)],
+          { concurrency: 2 },
+        )
+        return new ProductPriceInfo({ info, price })
+      },
+    )
+
+    const fulfillment = Effect.fn("Bunnings.fulfillment")(function* (
+      id: string,
+    ) {
+      const session = yield* CurrentSession
+      if (session.location._tag === "Unset") {
+        return Option.none()
+      }
+      const client = yield* apiClient("v2")
+      return yield* client
+        .post(`/products/${id}/fulfillment`, {
+          body: HttpBody.unsafeJson({
+            includeVariantStock: true,
+            isToggled: true,
+            locationCode: session.location.code,
+            storeRadius: "200000",
+          }),
+        })
+        .pipe(
+          Effect.flatMap(
+            HttpClientResponse.schemaBodyJson(FulfillmentResponse),
+          ),
+          Effect.map((_) => Option.some(_.data)),
+          Effect.catchTag("ParseError", () => Effect.succeedNone),
+        )
+    })
+
+    const storesPage = Effect.fn("Bunnings.stores")(function* (options: {
+      readonly latitude: number
+      readonly longitude: number
+      readonly page: number
+    }) {
+      const client = yield* apiClient("v1")
+      return yield* client
+        .get("/stores", {
+          urlParams: {
+            fields: "FULL",
+            latitude: options.latitude,
+            longitude: options.longitude,
+            pageSize: 7,
+            radius: 100000,
+            currentPage: options.page,
+          },
+        })
+        .pipe(Effect.flatMap(HttpClientResponse.schemaBodyJson(StoresResponse)))
+    })
+
+    const productLocation = Effect.fn("Bunnings.productLocation")(function* (
+      id: string,
+    ) {
+      const session = yield* CurrentSession
+      if (session.location._tag === "Unset") {
+        return Option.none()
+      }
+      const client = yield* apiClient("v1")
+      return yield* client
+        .get(`/item-api/locations`, {
+          urlParams: {
+            locationCode: session.location.code,
+            productCode: id,
+          },
+        })
+        .pipe(
+          Effect.flatMap(
+            HttpClientResponse.schemaBodyJson(ItemLocationResponse),
+          ),
+          Effect.map((_) =>
+            Option.some(_.data.flatMap((_) => _.inStoreLocations)).pipe(
+              Option.filter(Arr.isNonEmptyReadonlyArray),
+            ),
+          ),
+          Effect.catchTag("ParseError", () => Effect.succeedNone),
+        )
+    })
+
+    const stores = (options: {
+      readonly latitude: number
+      readonly longitude: number
+    }) =>
+      Stream.paginateChunkEffect(
+        0,
+        Effect.fnUntraced(function* (page) {
+          const result = yield* storesPage({
+            ...options,
+            page,
+          })
+          return [
+            result.data.stores,
+            Option.some(page + 1).pipe(
+              Option.filter((page) => page < result.data.pagination.totalPages),
+            ),
+          ] as const
+        }),
+      ).pipe(Stream.withSpan("Bunnings.stores"))
+
+    return {
+      makeSession,
+      search,
+      productInfo,
+      priceInfo,
+      productInfoWithPrice,
+      stores,
+      fulfillment,
+      productLocation,
+    } as const
+  }),
+}) {}
+
+const searchPayload = (
+  session: Session,
+  {
+    query,
+    offset,
+    priceRange,
+    ratingRange,
+  }: {
+    readonly query: string
+    readonly offset: number
+    readonly priceRange: Option.Option<readonly [number, number]>
+    readonly ratingRange: Option.Option<readonly [number, number]>
+  },
+) => {
+  const location = session.location
+  return {
+    debug: false,
+    enableDidYouMean: false,
+    enableDuplicateFiltering: false,
+    enableQuerySyntax: false,
+    facetOptions: { freezeFacetOrder: true },
+    filterField: "@baseid",
+    filterFieldRange: 10,
+    lowerCaseOperators: true,
+    partialMatch: true,
+    partialMatchKeywords: 2,
+    partialMatchThreshold: "30%",
+    questionMark: true,
+    enableWordCompletion: true,
+    firstResult: offset,
+    isGuestUser: true,
+    numberOfResults: "36",
+    sortCriteria: "relevancy",
+    analytics: { trackingId: location.website },
+    aq: `@availableinregions==(${location.lowerRegion}) AND @price_${location.code} > 0 AND @isactive==true AND @batchcountry==(${location.website})`,
+    context: session.location.searchContext,
+    searchHub: "PRODUCT_SEARCH",
+    cq: `@source==(PRODUCT_STREAM_${location.website})`,
+    facets: [
+      {
+        facetId: `@price_${location.code}`,
+        field: `price_${location.code}`,
+        type: "numericalRange",
+        injectionDepth: 1000,
+        filterFacetCount: true,
+        preventAutoSelect: false,
+        currentValues: Option.match(priceRange, {
+          onNone: () => [],
+          onSome: ([start, end]) => [
+            {
+              preventAutoSelect: false,
+              state: "selected",
+              end,
+              start,
+            },
+          ],
+        }),
+        numberOfValues: 1,
+        freezeCurrentValues: false,
+        generateAutomaticRanges: true,
+        rangeAlgorithm: "even",
+      },
+      {
+        facetId: "@rating",
+        field: "rating",
+        type: "numericalRange",
+        injectionDepth: 1000,
+        filterFacetCount: true,
+        preventAutoSelect: false,
+        currentValues: Option.match(ratingRange, {
+          onNone: () => [],
+          onSome: ([start, end]) => [
+            {
+              preventAutoSelect: false,
+              endInclusive: true,
+              state: "selected",
+              end,
+              start,
+            },
+          ],
+        }),
+        numberOfValues: 1,
+        freezeCurrentValues: false,
+      },
+    ],
+    groupBy: [
+      {
+        constantQueryOverride: `@source==(PRODUCT_STREAM_${location.website})`,
+        field: `@price_${location.code}`,
+        generateAutomaticRanges: true,
+        maximumNumberOfValues: 1,
+        advancedQueryOverride: "@uri",
+        queryOverride: query,
+      },
+    ],
+    fieldsToInclude: [
+      "source",
+      "thumbnailimageurl",
+      "supercategoriescode",
+      "validityscore",
+      "supercategoriesurl",
+      "supercategories",
+      "ratingcount",
+      "brandiconurl",
+      "transactionid",
+      "title",
+      "date",
+      "objecttype",
+      "productdimensiondepth",
+      "fsc",
+      "currency",
+      "moreoptions",
+      "colorcount",
+      "trustedseller",
+      "colornames",
+      `price_${location.code}`,
+      "rowid",
+      "rating",
+      "size",
+      "stockstatus",
+      "forhire",
+      "orderingid",
+      "baseproduct",
+      "bestseller",
+      "productroutingurl",
+      "brandcode",
+      "categories",
+      "productdimensionwidth",
+      "productdimensionheight",
+      "colorhexcodes",
+      "brandname",
+      "name",
+      "itemnumber",
+      "url",
+      "baseid",
+      "newarrival",
+      "imageurl",
+      "categoryiconurls",
+      "uri",
+      "availability",
+      "code",
+      "basicbundle",
+      "price",
+      `productRanges_${location.code}`,
+      "selectedcolorhexcode",
+      "description",
+      "keysellingpoints",
+      "brandurl",
+      "sizecount",
+      "timecount",
+      "weightcount",
+      "variantcount",
+      "volumncount",
+      `productRanges_${location.lowerRegion}`,
+      "stockindicator",
+      "productcount",
+      "familycolourname",
+      "unitofprice",
+      `storeattributes_${location.code}`,
+      "bundleproductreferences",
+      "isactive",
+      "sellericonurl",
+      "agerestricted",
+      "bundleaction",
+      "sellername",
+      "tintscount",
+      "tints",
+      "basecolor",
+      "volume",
+      `cprice_${location.code}`,
+      "comparisonunit",
+      "comparisonunitofmeasure",
+      "comparisonunitofmeasurecode",
+      "promotionalcampaign",
+      "promotionalcampaignstart",
+      "promotionalcampaignend",
+      "defaultofferid",
+      "isdeliveryincluded",
+    ],
+    context_platform: "Web",
+    context_role: "retail",
+    context_website: location.website,
+    cu: location.httpHeaders.currency,
+    de: "UTF-8",
+    context_region: location.state,
+    context_state: location.state,
+    context_store: location.code,
+    pipeline: "Variant_Product",
+    q: query,
+  }
+}
+
+
+
+---
+File: /server/src/main.ts
+---
+
+import { Layer } from "effect"
+import { HttpLayer } from "./Rpc"
+import { NodeRuntime } from "@effect/platform-node"
+import { TracerLayer } from "./Tracing"
+
+HttpLayer.pipe(
+  Layer.provideMerge(TracerLayer),
+  Layer.launch,
+  NodeRuntime.runMain,
+)
+
+
+
+---
+File: /server/src/Playwright.ts
+---
+
+/**
+ * @since 1.0.0
+ */
+import { Config, Context, Data, Effect, Layer } from "effect"
+import * as Api from "playwright"
+
+export class PlaywrightError extends Data.TaggedError("PlaywrightError")<{
+  readonly cause: unknown
+}> {}
+
+export class Browser extends Context.Tag("Playwright/Browser")<
+  Browser,
+  Api.Browser
+>() {
+  static readonly layerChromium = (options?: Api.LaunchOptions) =>
+    Layer.scoped(
+      this,
+      Effect.acquireRelease(
+        Effect.tryPromise({
+          try: () => Api.chromium.launch(options),
+          catch: (cause) => new PlaywrightError({ cause }),
+        }),
+        (browser) => Effect.promise(() => browser.close()),
+      ),
+    )
+
+  static readonly layerWebkit = (options?: Api.LaunchOptions) =>
+    Layer.scoped(
+      this,
+      Effect.acquireRelease(
+        Effect.tryPromise({
+          try: () => Api.webkit.launch(options),
+          catch: (cause) => new PlaywrightError({ cause }),
+        }),
+        (browser) => Effect.promise(() => browser.close()),
+      ),
+    )
+
+  static Live = Layer.unwrapEffect(
+    Effect.gen(this, function* () {
+      const isProd = yield* Config.string("NODE_ENV").pipe(
+        Config.map((env) => env === "production"),
+        Config.withDefault(false),
+      )
+
+      return this.layerChromium({
+        headless: isProd,
+        args: isProd ? ["--no-sandbox"] : [],
+      })
+    }),
+  )
+}
+
+export class BrowserContext extends Context.Tag("Playwright/BrowserContext")<
+  BrowserContext,
+  Api.BrowserContext
+>() {
+  static layer = (options?: Api.BrowserContextOptions) =>
+    Layer.scoped(
+      this,
+      Effect.flatMap(Browser, (browser) =>
+        Effect.acquireRelease(
+          Effect.tryPromise({
+            try: () => browser.newContext(options),
+            catch: (cause) => new PlaywrightError({ cause }),
+          }),
+          (context) => Effect.promise(() => context.close()),
+        ),
+      ),
+    )
+
+  static Live = this.layer().pipe(Layer.provide(Browser.Live))
+}
+
+export class Page extends Effect.Service<Page>()("Playwright/Page", {
+  scoped: Effect.gen(function* () {
+    const context = yield* BrowserContext
+    const page = yield* Effect.acquireRelease(
+      Effect.tryPromise({
+        try: () => context.newPage(),
+        catch: (cause) => new PlaywrightError({ cause }),
+      }),
+      (page) => Effect.promise(() => page.close()),
+    )
+
+    return {
+      page,
+      with<A>(
+        f: (page: Api.Page) => Promise<A>,
+      ): Effect.Effect<A, PlaywrightError> {
+        const trace = new Error()
+        return Effect.tryPromise({
+          try: () => f(page),
+          catch: (cause) => new PlaywrightError({ cause }),
+        }).pipe(
+          Effect.withSpan("Playwright/Page.with", {
+            captureStackTrace: () => trace.stack,
+          }),
+        )
+      },
+    }
+  }),
+  dependencies: [BrowserContext.Live],
+}) {
+  static with<A>(f: (page: Api.Page) => Promise<A>) {
+    return Effect.flatMap(Page, (p) => p.with(f))
+  }
+}
+
+
+
+---
+File: /server/src/Rpc.ts
+---
+
+import { RpcServer, RpcSerialization } from "@effect/rpc"
+import { Rpcs } from "./domain/Rpc"
+import { Effect, Layer, Option, Stream } from "effect"
+import { AuthLayer } from "./Auth"
+import { NodeHttpServer } from "@effect/platform-node"
+import { createServer } from "node:http"
+import { Bunnings } from "./Bunnings"
+import { Bazaar } from "./Bazaar"
+import { CurrentSession, FulfillmentInfoWithLocation } from "./domain/Bunnings"
+import { Sessions } from "./Sessions"
+import * as HttpLayerRouter from "@effect/platform/HttpLayerRouter"
+
+const Handlers = Rpcs.toLayer(
+  Effect.gen(function* () {
+    const bunnings = yield* Bunnings
+    const bazaar = yield* Bazaar
+    const sessions = yield* Sessions
+    return Rpcs.of({
+      login: Effect.fnUntraced(function* ({ location }) {
+        const session = yield* CurrentSession
+        if (Option.isSome(location)) {
+          yield* sessions.setLocation(session.id, location.value)
+        }
+        return session
+      }),
+      search: (request) => bunnings.search(request).pipe(Effect.orDie),
+      productInfo: ({ id }) =>
+        bunnings.productInfoWithPrice(id).pipe(Effect.orDie),
+      productReviews: ({ id }) => bazaar.reviews(id).pipe(Stream.orDie),
+      productReviewStats: ({ id }) => bazaar.overview(id).pipe(Effect.orDie),
+      fulfillment: Effect.fnUntraced(function* ({ id }) {
+        const [fulfillment, location] = yield* Effect.all(
+          [bunnings.fulfillment(id), bunnings.productLocation(id)],
+          { concurrency: 2 },
+        )
+        return Option.map(
+          fulfillment,
+          (fulfillment) =>
+            new FulfillmentInfoWithLocation({
+              fulfillment,
+              location: Option.map(location, (_) => _[0]),
+            }),
+        )
+      }, Effect.orDie),
+      stores: (req) => bunnings.stores(req).pipe(Stream.orDie),
+    })
+  }),
+).pipe(Layer.provide([Bunnings.Default, Bazaar.Default, Sessions.Default]))
+
+const RpcRoute = RpcServer.layerHttpRouter({
+  group: Rpcs,
+  path: "/rpc",
+}).pipe(
+  Layer.provide(Handlers),
+  Layer.provide(AuthLayer),
+  Layer.provide(RpcSerialization.layerJson),
+  Layer.provide(HttpLayerRouter.cors()),
+)
+
+export const HttpLayer = HttpLayerRouter.serve(RpcRoute).pipe(
+  Layer.provide(NodeHttpServer.layer(createServer, { port: 3000 })),
+)
+
+
+
+---
+File: /server/src/Sessions.ts
+---
+
+import { Cache, DateTime, Effect, Exit } from "effect"
+import { Bunnings } from "./Bunnings"
+import { SessionLocation } from "./domain/Bunnings"
+
+export class Sessions extends Effect.Service<Sessions>()("api/Sessions", {
+  dependencies: [Bunnings.Default],
+  effect: Effect.gen(function* () {
+    const bunnings = yield* Bunnings
+    const locations = new Map<string, SessionLocation>()
+
+    const sessions = yield* Cache.makeWith({
+      capacity: Number.MAX_SAFE_INTEGER,
+      lookup: (sessionId: string) => bunnings.makeSession(sessionId),
+      timeToLive(exit) {
+        if (Exit.isFailure(exit)) {
+          return "1 minute"
+        }
+        return DateTime.subtract(exit.value.token.expires, { hours: 1 }).pipe(
+          DateTime.distanceDuration(DateTime.unsafeNow()),
+        )
+      },
+    })
+
+    return {
+      get: Effect.fnUntraced(function* (sessionId: string) {
+        const session = yield* sessions.get(sessionId)
+        const location = locations.get(sessionId)
+        return location ? session.withLocation(location) : session
+      }),
+      setLocation: (sessionId: string, location: SessionLocation) =>
+        Effect.sync(() => {
+          locations.set(sessionId, location)
+        }),
+    } as const
+  }),
+}) {}
+
+
+
+---
+File: /server/src/Tracing.ts
+---
+
+import { NodeHttpClient } from "@effect/platform-node"
+import * as OtlpTracer from "@effect/opentelemetry/OtlpTracer"
+import { Config, Effect, Layer, Option, Redacted } from "effect"
+
+export const TracerLayer = Layer.unwrapEffect(
+  Effect.gen(function* () {
+    const apiKey = yield* Config.redacted("HONEYCOMB_API_KEY").pipe(
+      Config.option,
+    )
+    if (Option.isNone(apiKey)) {
+      return Layer.empty
+    }
+    return OtlpTracer.layer({
+      url: "https://api.honeycomb.io/v1/traces",
+      headers: {
+        "X-Honeycomb-Team": Redacted.value(apiKey.value),
+        "X-Honeycomb-Dataset": "bunnings-lite",
+      },
+      resource: {
+        serviceName: "bunnings-api",
+      },
+    }).pipe(Layer.provide(NodeHttpClient.layerUndici))
+  }),
+)
+
+
+
+---
+File: /server/tsup.config.ts
+---
+
+import { defineConfig } from "tsup"
+
+export default defineConfig({
+  entry: ["src/main.ts"],
+  clean: true,
+  treeshake: "smallest",
+})
+
+
+
+---
+File: /src/App/atoms.ts
+---
+
+import { Atom } from "@effect-atom/atom-react"
+import * as Effect from "effect/Effect"
+
+export const installPromptAtom = Atom.make((get) =>
+  Effect.async<() => Promise<void>>((resume) => {
+    const onBeforeInstallPrompt = (e: any) => {
+      e.preventDefault()
+      resume(
+        Effect.succeed(async () => {
+          await e.prompt()
+          await e.userChoice
+          get.refreshSelf()
+        }),
+      )
+    }
+    window.addEventListener("beforeinstallprompt", onBeforeInstallPrompt, {
+      once: true,
+    })
+    return Effect.sync(() => {
+      window.removeEventListener("beforeinstallprompt", onBeforeInstallPrompt)
+    })
+  }),
+).pipe(Atom.keepAlive)
+
+
+
+---
+File: /src/App/InstallButton.tsx
+---
+
+import { Button } from "@/components/ui/button"
+import { Result, useAtomValue } from "@effect-atom/atom-react"
+import { installPromptAtom } from "./atoms"
+import { Home } from "lucide-react"
+
+export function InstallButton() {
+  return Result.builder(useAtomValue(installPromptAtom))
+    .onSuccess((install) => (
+      <Button onClick={() => install} className="cursor-pointer">
+        <Home />
+        Add to home screen
+      </Button>
+    ))
+    .render()
+}
+
+
+
+---
+File: /src/atoms/kvs.ts
+---
+
+import { Atom } from "@effect-atom/atom-react"
+import * as BrowserKeyValueStore from "@effect/platform-browser/BrowserKeyValueStore"
+
+export const kvsRuntime = Atom.runtime(BrowserKeyValueStore.layerLocalStorage)
+
+
+
+---
+File: /src/Favorites/atoms.ts
+---
+
+import { Result, Atom, useAtomSet } from "@effect-atom/atom-react"
+import { ProductBaseInfo } from "../../server/src/domain/Bunnings"
+import { useCallback } from "react"
+import * as Effect from "effect/Effect"
+import * as Stream from "effect/Stream"
+import { FavoritesRepo } from "@/Favorites"
+import { EventLogClient } from "@/EventLog"
+
+export const favoritesAtom = FavoritesRepo.runtime.atom(
+  FavoritesRepo.use((_) => _.allReactive).pipe(Stream.unwrap),
+)
+
+export const isFavoriteAtom = Atom.family((id: string) =>
+  Atom.map(favoritesAtom, (result) =>
+    result.pipe(
+      Result.map((favorites) => favorites.some((p) => p.id === id)),
+      Result.getOrElse(() => false),
+    ),
+  ),
+)
+
+export const clearFavoritesAtom = EventLogClient.runtime.fn(() =>
+  EventLogClient.use((_) => _("FavoritesClear", void 0)),
+)
+
+export const toggleFavoriteAtom = EventLogClient.runtime.fn(
+  Effect.fnUntraced(function* (product: ProductBaseInfo, get: Atom.FnContext) {
+    const client = yield* EventLogClient
+    const isFavorite = get(isFavoriteAtom(product.id))
+    if (isFavorite) {
+      yield* client("FavoriteRemove", product.id)
+    } else {
+      yield* client("FavoriteAdd", product)
+    }
+  }),
+)
+
+export const useFavoritesToggle = () => {
+  const toggle = useAtomSet(toggleFavoriteAtom)
+  return useCallback((product: ProductBaseInfo) => toggle(product), [toggle])
+}
+
+
+
+---
+File: /src/Favorites/Button.tsx
+---
+
+import { ProductBaseInfo } from "server/src/domain/Bunnings"
+import { isFavoriteAtom, useFavoritesToggle } from "./atoms"
+import { Star } from "lucide-react"
+import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { useAtomValue } from "@effect-atom/atom-react"
+
+export function FavoriteButton({
+  product,
+  variant = "full",
+}: {
+  readonly product: ProductBaseInfo
+  readonly variant?: "full" | "icon"
+}) {
+  const isFavorite = useAtomValue(isFavoriteAtom(product.id))
+  const toggleFavorite = useFavoritesToggle()
+
+  if (variant === "full") {
+    return (
+      <Button onClick={() => toggleFavorite(product)}>
+        <Star
+          className={cn(
+            "text-white cursor-pointer",
+            isFavorite ? "fill-white" : "fill-none",
+          )}
+        />
+        {isFavorite ? "Remove from favorites" : "Add to favorites"}
+      </Button>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onMouseDownCapture={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        toggleFavorite(product)
+      }}
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+      }}
+      aria-label="Toggle favorite"
+    >
+      <Star
+        className={cn(
+          "text-secondary cursor-pointer",
+          isFavorite ? "fill-secondary" : "fill-none",
+        )}
+      />
+    </button>
+  )
+}
+
+
+
+---
+File: /src/Favorites/Events.ts
+---
+
+import { EventGroup } from "@effect/experimental"
+import { ProductBaseInfo } from "../../server/src/domain/Bunnings"
+
+export class FavoriteEvents extends EventGroup.empty
+  .add({
+    tag: "FavoriteAdd",
+    primaryKey: () => "",
+    payload: ProductBaseInfo,
+  })
+  .add({
+    tag: "FavoriteRemove",
+    primaryKey: () => "",
+    payload: ProductBaseInfo.fields.id,
+  })
+  .add({
+    tag: "FavoritesClear",
+    primaryKey: () => "",
+  }) {}
+
+
+
+---
+File: /src/lib/useScrollBottom.ts
+---
+
+import { useEffect, useRef } from "react"
+
+export function useScrollBottom(f: () => void) {
+  const bottomRef = useRef(false)
+
+  useEffect(() => {
+    let scrollHeight = document.body.scrollHeight
+
+    const onscroll = () => {
+      const scrolledTo = window.scrollY + window.innerHeight
+      const threshold = window.innerHeight
+
+      const newScrollHeight = document.body.scrollHeight
+      const scrollHeightChanged = scrollHeight !== newScrollHeight
+      scrollHeight = newScrollHeight
+
+      const isReachBottom = newScrollHeight - threshold <= scrolledTo
+
+      if (isReachBottom && (!bottomRef.current || scrollHeightChanged)) {
+        bottomRef.current = true
+        f()
+      } else if (!isReachBottom) {
+        bottomRef.current = false
+      }
+    }
+
+    window.addEventListener("scroll", onscroll, { passive: true })
+    return () => {
+      window.removeEventListener("scroll", onscroll)
+    }
+  }, [bottomRef])
+}
+
+
+
+---
+File: /src/lib/utils.ts
+---
+
+import { clsx, type ClassValue } from "clsx"
+import { twMerge } from "tailwind-merge"
+
+export function cn(...inputs: ClassValue[]) {
+  return twMerge(clsx(inputs))
+}
+
+
+
+---
+File: /src/Product/atoms.ts
+---
+
+import { Result, Atom } from "@effect-atom/atom-react"
+import { BaseInfoKey, BunningsClient } from "@/RpcClient"
+import { currentLocationAtom } from "@/Stores/atoms"
+import { ProductBaseInfo } from "server/src/domain/Bunnings"
+import * as Effect from "effect/Effect"
+import * as Option from "effect/Option"
+
+export const preloadAtom = Atom.fnSync((key: BaseInfoKey, get) => {
+  get(productAtom(key))
+  get(productFulfillmentAtom(key.id))
+  get(productReviewStatsAtom(key.id))
+  get(productReviewsAtom(key.id))
+})
+
+export const productAtom = Atom.family((key: BaseInfoKey) =>
+  Atom.make((get) => {
+    const fullInfo = get(productFullInfoAtom(key.id))
+    if (key.result && fullInfo._tag !== "Success") {
+      return Result.success(key.result)
+    }
+    return Result.map(fullInfo, (_) => _.asBaseInfo)
+  }).pipe(Atom.setIdleTTL("5 minutes")),
+)
+
+export const productFullInfoAtom = (id: string) =>
+  BunningsClient.query("productInfo", { id }, { timeToLive: "10 minutes" })
+
+export const productReviewStatsAtom = Atom.family((id: string) =>
+  BunningsClient.query("productReviewStats", { id }).pipe(
+    Atom.map((_) => Option.flatten(Result.value(_))),
+    Atom.setIdleTTL("10 minutes"),
+  ),
+)
+
+export const productReviewCountAtom = Atom.family((product: ProductBaseInfo) =>
+  Atom.make((get) => {
+    const stats = get(productReviewStatsAtom(product.id))
+    return Option.isSome(stats)
+      ? stats.value.ReviewStatistics.TotalReviewCount
+      : product.numberOfReviews
+  }),
+)
+
+export const productRatingAtom = Atom.family((product: ProductBaseInfo) =>
+  Atom.make((get) => {
+    const stats = get(productReviewStatsAtom(product.id))
+    return Option.isSome(stats)
+      ? stats.value.ReviewStatistics.AverageOverallRating
+      : product.rating
+  }),
+)
+
+export const productReviewsAtom = (id: string) =>
+  BunningsClient.query("productReviews", { id }, { timeToLive: "5 minutes" })
+
+export const productFulfillmentAtom = Atom.family((id: string) =>
+  BunningsClient.runtime
+    .atom(
+      Effect.fnUntraced(function* (get) {
+        get(currentLocationAtom)
+        const products = yield* BunningsClient
+        return yield* products("fulfillment", { id })
+      }),
+    )
+    .pipe(Atom.setIdleTTL("15 minutes")),
+)
+
+
+
+---
+File: /src/Product/FulfillmentBadge.tsx
+---
+
+import { ProductBaseInfo } from "server/src/domain/Bunnings"
+import { Result, useAtomValue } from "@effect-atom/atom-react"
+import { productFulfillmentAtom } from "./atoms"
+import { Badge } from "@/components/ui/badge"
+import { MapPin } from "lucide-react"
+import * as Option from "effect/Option"
+
+export function FulfillmentBadge({
+  product,
+  showAvailable,
+}: {
+  readonly product: ProductBaseInfo
+  readonly showAvailable?: boolean
+}) {
+  const maybeResult = Result.getOrElse(
+    useAtomValue(productFulfillmentAtom(product.id)),
+    Option.none,
+  )
+
+  if (Option.isNone(maybeResult)) {
+    return null
+  }
+
+  const fullfillment = maybeResult.value
+  if (!fullfillment.isAvailable) {
+    return <Badge className="bg-orange-500 text-white">Out of stock</Badge>
+  } else if (Option.isSome(fullfillment.location)) {
+    const { aisle, bay } = fullfillment.location.value
+    return (
+      <Badge variant="outline" className="bg-white/20 backdrop-blur-sm">
+        <MapPin />
+        Aisle {aisle}/{bay}
+      </Badge>
+    )
+  }
+
+  if (!showAvailable) {
+    return null
+  }
+
+  return <Badge className="bg-green-500 text-white">Available</Badge>
+}
+
+
+
+---
+File: /src/Product/Listing.tsx
+---
+
+import { Card, CardContent } from "@/components/ui/card"
+import { ProductBaseInfo, ProductPriceInfo } from "server/src/domain/Bunnings"
+import { StarRating } from "@/components/ui/star-rating"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Result, Atom, useAtom, useAtomValue } from "@effect-atom/atom-react"
+import { cn } from "@/lib/utils"
+import { Button } from "@/components/ui/button"
+import { ArrowLeft, ArrowRight } from "lucide-react"
+import { ProductReview } from "server/src/domain/Bazaar"
+import Markdown from "react-markdown"
+import {
+  productRatingAtom,
+  productReviewCountAtom,
+  productReviewsAtom,
+  productReviewStatsAtom,
+} from "./atoms"
+import { FavoriteButton } from "@/Favorites/Button"
+import rehypeRaw from "rehype-raw"
+import { useScrollBottom } from "@/lib/useScrollBottom"
+import { FulfillmentBadge } from "./FulfillmentBadge"
+import * as DateTime from "effect/DateTime"
+import * as Option from "effect/Option"
+
+export function ProductListing({
+  product,
+  fullInfo,
+}: {
+  readonly product: ProductBaseInfo
+  readonly fullInfo: Option.Option<ProductPriceInfo>
+}) {
+  const pointers = fullInfo.pipe(
+    Option.flatMapNullable((info) => info.info.feature.pointers),
+  )
+
+  const description = (
+    <>
+      {fullInfo.pipe(
+        Option.map((info) => (
+          <div className="prose">
+            {Option.isSome(pointers) && (
+              <ul>
+                {pointers.value.map((pointer, i) => (
+                  <li key={i}>{pointer}</li>
+                ))}
+              </ul>
+            )}
+            <Markdown rehypePlugins={[rehypeRaw]}>
+              {info.info.feature.description}
+            </Markdown>
+          </div>
+        )),
+        Option.getOrElse(() => <SkeletonDescription />),
+      )}
+    </>
+  )
+
+  return (
+    <div>
+      <div className="py-2">
+        <Button
+          variant="link"
+          className="cursor-pointer"
+          onClick={() => history.back()}
+        >
+          <ArrowLeft />
+          Back
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="flex flex-col gap-4">
+          <h1 className="text-2xl md:text-3xl font-bold">{product.title}</h1>
+
+          <div className="flex gap-4 items-center">
+            <FulfillmentBadge product={product} />
+            <span className="text-sm text-gray-500">I/N: {product.id}</span>
+          </div>
+
+          <div className="flex items-center gap-4">
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl font-bold">${product.price}</span>
+              <span className="text-sm text-gray-500">inc. GST</span>
+            </div>
+            <ProductRating product={product} />
+          </div>
+
+          <div className="flex gap-2 items-center flex-wrap">
+            <FavoriteButton product={product} />
+            <Button asChild>
+              <a href={product.url} target="_blank" rel="noopener noreferrer">
+                Open in Bunnings
+                <ArrowRight />
+              </a>
+            </Button>
+          </div>
+
+          <div className="flex-col gap-4 text-sm hidden md:block">
+            {description}
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-4 md:-order-1">
+          <SelectedImage product={product} />
+          <ThumbnailImages product={product} />
+        </div>
+
+        <div className="flex flex-col gap-4 text-sm md:hidden">
+          {description}
+        </div>
+      </div>
+
+      <div className="h-8 md:h-12" />
+
+      <Reviews product={product} />
+    </div>
+  )
+}
+
+function ProductRating({ product }: { readonly product: ProductBaseInfo }) {
+  const numberOfReviews = useAtomValue(productReviewCountAtom(product))
+  const rating = useAtomValue(productRatingAtom(product))
+  return (
+    <div className="flex gap-2">
+      <StarRating rating={rating} />
+      <span className="text-sm text-gray-500">({numberOfReviews} reviews)</span>
+    </div>
+  )
+}
+
+function SkeletonDescription() {
+  return (
+    <div className="flex flex-col space-y-2">
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-full" />
+      <Skeleton className="h-4 w-full" />
+    </div>
+  )
+}
+
+const imageIndexAtom = Atom.make(0)
+
+function SelectedImage({ product }: { readonly product: ProductBaseInfo }) {
+  const index = useAtomValue(imageIndexAtom)
+  const image = product.images[index]
+  return (
+    <div className="border rounded-lg bg-white flex items-center justify-center aspect-square overflow-hidden">
+      <img src={image.url} alt={product.title} />
+    </div>
+  )
+}
+
+function ThumbnailImages({ product }: { readonly product: ProductBaseInfo }) {
+  const [index, setIndex] = useAtom(imageIndexAtom)
+  return (
+    <div className="grid grid-cols-4 gap-2">
+      {product.images.map((image, i) => (
+        <button
+          key={i}
+          className={cn(
+            "border rounded-md p-2 hover:border-primary",
+            i === index ? "border-primary" : undefined,
+          )}
+          onClick={() => setIndex(i)}
+        >
+          <img src={image.thumbnailUrl} alt={product.title} />
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Reviews({ product }: { readonly product: ProductBaseInfo }) {
+  return (
+    <div>
+      <h3 className="text-2xl font-bold mb-4">Customer Reviews</h3>
+      <ReviewsOverview product={product} />,
+      <ReviewsGrid product={product} />
+    </div>
+  )
+}
+
+function ReviewsOverview({ product }: { readonly product: ProductBaseInfo }) {
+  const reviewStats = useAtomValue(productReviewStatsAtom(product.id))
+  if (Option.isNone(reviewStats)) {
+    return <SkeletonRatings />
+  }
+  const stats = reviewStats.value.ReviewStatistics
+  return (
+    <div className="flex items-center gap-4 mb-6 max-w-lg">
+      <div className="flex flex-col items-center">
+        <span className="text-4xl font-bold">
+          {stats.AverageOverallRating.toFixed(1)}
+        </span>
+        <div className="flex">
+          <StarRating rating={stats.AverageOverallRating} />
+        </div>
+        <span className="text-sm text-gray-500">
+          {stats.TotalReviewCount} reviews
+        </span>
+      </div>
+      <div className="flex-1">
+        {[5, 4, 3, 2, 1].map((i) => {
+          const rating = stats.RatingDistribution.find(
+            (r) => r.RatingValue === i,
+          )
+          const percentage = rating
+            ? Math.round(100 * (rating.Count / stats.TotalReviewCount))
+            : 0
+          return (
+            <div key={i} className="flex items-center gap-2 text-sm">
+              <span className="w-2">{i}</span>
+              <div className="w-full bg-gray-200 rounded-full h-2">
+                <div
+                  className="bg-secondary h-2 rounded-full"
+                  style={{
+                    width: `${percentage}%`,
+                  }}
+                ></div>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function SkeletonRatings() {
+  return (
+    <div className="flex items-center gap-4 mb-6 max-w-lg">
+      <div className="flex w-full space-y-3">
+        <Skeleton className="h-32 w-32 rounded-xl" />
+        <div className="w-4" />
+        <div className="space-y-2 flex-1">
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-full" />
+          <Skeleton className="h-4 w-full" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ReviewsGrid({ product }: { readonly product: ProductBaseInfo }) {
+  const [result, pullReviews] = useAtom(productReviewsAtom(product.id))
+
+  const reviews = Result.map(result, (_) => _.items).pipe(
+    Result.getOrElse(() => []),
+  )
+
+  useScrollBottom(() => {
+    pullReviews()
+  })
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 grid-template-rows-[masonry]">
+      {reviews.map((review, i) => (
+        <ReviewCard key={i} review={review} />
+      ))}
+    </div>
+  )
+}
+
+function ReviewCard({ review }: { readonly review: ProductReview }) {
+  return (
+    <Card>
+      <CardContent>
+        <div className="flex justify-between items-start">
+          <div>
+            <h4 className="font-bold">{review.Title}</h4>
+            <div className="flex my-1">
+              <StarRating size="sm" rating={review.Rating} />
+            </div>
+          </div>
+          <span className="text-sm text-gray-500">
+            {DateTime.formatLocal(review.SubmissionTime, {
+              dateStyle: "short",
+            })}
+          </span>
+        </div>
+        <div className="mt-2 prose prose-sm">
+          <Markdown>{review.ReviewText}</Markdown>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+
+
+---
+File: /src/routes/product/$id.tsx
+---
+
+import { ProductListing } from "@/Product/Listing"
+import { productFullInfoAtom, productAtom } from "@/Product/atoms"
+import { BaseInfoKey } from "@/RpcClient"
+import { Result, useAtomValue } from "@effect-atom/atom-react"
+import { createFileRoute } from "@tanstack/react-router"
+import * as Option from "effect/Option"
+
+export const Route = createFileRoute("/product/$id")({
+  component: ProductScreen,
+})
+
+export function ProductScreen() {
+  const { id } = Route.useParams()
+  const product = useAtomValue(productAtom(new BaseInfoKey({ id })))
+  const fullInfo = Result.value(useAtomValue(productFullInfoAtom(id)))
+  if (product._tag !== "Success") {
+    return null
+  }
+  return (
+    <ProductListing
+      product={fullInfo.pipe(
+        Option.map((full) => full.asBaseInfo),
+        Option.getOrElse(() => product.value),
+      )}
+      fullInfo={fullInfo}
+    />
+  )
+}
+
+
+
+---
+File: /src/routes/__root.tsx
+---
+
+import { createRootRoute, Outlet, useNavigate } from "@tanstack/react-router"
+import { LoaderCircle, Search, Settings2 } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import {
+  useAtomValue,
+  useAtom,
+  useAtomSet,
+  useAtomSubscribe,
+  Atom,
+} from "@effect-atom/atom-react"
+import {
+  focusAtom,
+  loadingAtom,
+  queryIsSetAtom,
+  queryAtom,
+} from "@/Search/atoms"
+import React, { useCallback, useState } from "react"
+import { cn } from "@/lib/utils"
+import { locationAtom } from "@/Router"
+import {
+  Drawer,
+  DrawerClose,
+  DrawerContent,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerTrigger,
+} from "@/components/ui/drawer"
+import { Button } from "@/components/ui/button"
+import { identityStringAtom, remoteUrlAtom } from "@/EventLog"
+import * as Option from "effect/Option"
+
+export const Route = createRootRoute({
+  component: () => (
+    <div className="flex min-h-screen flex-col bg-primary">
+      <header>
+        <SettingsPanel />
+
+        <div className="flex">
+          <div className="flex-1"></div>
+          <Logo />
+          <div className="flex-1"></div>
+        </div>
+
+        <div className="px-4">
+          <SearchInput />
+        </div>
+      </header>
+
+      <main className="flex-1 bg-white px-2 sm:px-4 pb-18">
+        <div className="container mx-auto max-w-7xl">
+          <Outlet />
+        </div>
+      </main>
+    </div>
+  ),
+})
+
+const minimizeAtom = Atom.make((get) => {
+  const path = get(locationAtom).pathname
+  return path !== "/" || get(queryIsSetAtom)
+})
+
+function Logo() {
+  const minimize = useAtomValue(minimizeAtom)
+  const setQuery = useAtomSet(queryAtom)
+  const navigate = useNavigate()
+  return (
+    <img
+      src="/logo.svg"
+      alt="Bunnings Logo"
+      width={150}
+      height={50}
+      className={`block transition-all ${minimize ? "mt-5 h-[30px]" : "mt-20 h-[50px]"} w-auto cursor-pointer`}
+      onClick={() => {
+        setQuery("")
+        navigate({ to: "/" })
+      }}
+    />
+  )
+}
+
+function SearchInput() {
+  const navigate = useNavigate()
+  const [query, setQuery] = useAtom(queryAtom)
+  const minimize = useAtomValue(minimizeAtom)
+  const inputRef = React.useRef<HTMLInputElement>(null)
+
+  const onChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setQuery(e.target.value)
+      if (location.pathname !== "/") {
+        navigate({ to: "/", search: { query: e.target.value } })
+      }
+    },
+    [setQuery, location, navigate],
+  )
+
+  useAtomSubscribe(focusAtom, (i) => {
+    if (!inputRef.current || i === 0) return
+    inputRef.current.focus({ preventScroll: true })
+    window.scroll({
+      top: 0,
+      behavior: "smooth",
+    })
+  })
+
+  const loading = useAtomValue(loadingAtom)
+  const Icon = loading ? LoaderCircle : Search
+
+  return (
+    <div className="relative w-full max-w-lg mx-auto">
+      <Icon
+        className={cn(
+          "absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground",
+          loading && "animate-spin",
+        )}
+      />
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          inputRef.current?.blur()
+        }}
+      >
+        <Input
+          ref={inputRef}
+          type="search"
+          placeholder="Search for products..."
+          className={`w-full h-12 pl-10 border-2 border-white rounded-md focus-visible:ring-secondary focus-visible:border-secondary bg-white ${minimize ? "my-5" : "my-20"}`}
+          value={query}
+          onChange={onChange}
+          autoFocus
+        />
+      </form>
+    </div>
+  )
+}
+
+function SettingsPanel() {
+  const [identityString, setIdentityString] = useAtom(identityStringAtom)
+  const [remoteUrlReal, setRemoteUrlReal] = useAtom(remoteUrlAtom)
+  const [remoteUrl, setRemoteUrl] = useState(
+    Option.match(remoteUrlReal, {
+      onNone: () => "",
+      onSome: (url) => url.toString(),
+    }),
+  )
+  return (
+    <Drawer
+      onClose={() =>
+        setRemoteUrl(
+          Option.match(remoteUrlReal, {
+            onNone: () => "",
+            onSome: (url) => url.toString(),
+          }),
+        )
+      }
+    >
+      <DrawerTrigger>
+        <Settings2 className="text-white absolute top-3 right-3 cursor-pointer" />
+      </DrawerTrigger>
+      <DrawerContent className="max-w-md mx-auto">
+        <DrawerHeader>
+          <DrawerTitle>Sync settings</DrawerTitle>
+        </DrawerHeader>
+        <div className="p-3 flex flex-col gap-4">
+          <label className="text-sm">
+            Remote URL
+            <Input
+              id="identity"
+              value={remoteUrl}
+              onChange={(e) => {
+                const trimmed = e.target.value.trim()
+                if (trimmed === "") {
+                  setRemoteUrlReal(Option.none())
+                } else {
+                  const url = URL.parse(trimmed)
+                  if (url) {
+                    setRemoteUrlReal(Option.some(url))
+                  }
+                }
+                setRemoteUrl(e.target.value)
+              }}
+            />
+          </label>
+
+          <label className="text-sm">
+            Identity
+            <Input
+              id="identity"
+              value={identityString}
+              onChange={(e) => setIdentityString(e.target.value)}
+            />
+          </label>
+        </div>
+        <DrawerFooter>
+          <DrawerClose asChild>
+            <Button variant="outline">Close</Button>
+          </DrawerClose>
+        </DrawerFooter>
+      </DrawerContent>
+    </Drawer>
+  )
+}
+
+
+
+---
+File: /src/routes/index.tsx
+---
+
+import { createFileRoute } from "@tanstack/react-router"
+import { SearchResults } from "@/Search/SearchResults"
+
+export const Route = createFileRoute("/")({
+  component: SearchPage,
+})
+
+export function SearchPage() {
+  return <SearchResults />
+}
+
+
+
+---
+File: /src/Search/atoms.ts
+---
+
+import { BunningsClient } from "@/RpcClient"
+import { currentLocationAtom } from "@/Stores/atoms"
+import { Atom } from "@effect-atom/atom-react"
+import * as Array from "effect/Array"
+import * as Data from "effect/Data"
+import * as Effect from "effect/Effect"
+import * as Option from "effect/Option"
+import * as Stream from "effect/Stream"
+import { Facet, ProductBaseInfo } from "../../server/src/domain/Bunnings"
+import * as Mailbox from "effect/Mailbox"
+import { Unauthorized } from "server/src/domain/Auth"
+import * as RpcClientError from "@effect/rpc/RpcClientError"
+
+export const queryAtom = Atom.searchParam("query")
+
+export const queryIsSetAtom = Atom.map(
+  queryAtom,
+  (query) => query.trim() !== "",
+)
+
+export const loginAtom = BunningsClient.runtime.atom(
+  Effect.fnUntraced(function* (get) {
+    const client = yield* BunningsClient
+    const location = get(currentLocationAtom)
+    yield* client("login", { location })
+  }),
+)
+
+const queryTrimmedAtom = Atom.map(queryAtom, (query) => query.trim())
+
+const facetsAtom = Atom.make<{
+  forQuery: string
+  facets: ReadonlyArray<Facet>
+}>({
+  forQuery: "",
+  facets: [],
+}).pipe(Atom.keepAlive)
+
+class Filter extends Data.Class<{
+  id: string
+  name: string
+  kind: "slider" | "text"
+  valuePrefix: string
+  facetValueOverride?: {
+    readonly start: number
+    readonly end: number
+    readonly endInclusive: boolean
+  }
+}> {}
+
+const filterAtom = Atom.family((filter: Filter) => {
+  const self = {
+    filter,
+    facet: filter.facetValueOverride
+      ? Atom.make(Option.some(filter.facetValueOverride))
+      : Atom.make((get) => {
+          const facets = get(facetsAtom).facets
+          return Array.findFirst(facets, (g) => g.facetId === filter.id).pipe(
+            Option.flatMapNullable((_) => _.values[0]),
+          )
+        }),
+    min: Atom.writable(
+      () => Option.none<number>(),
+      (ctx, value: number) => {
+        ctx.setSelf(Option.some(value))
+      },
+    ).pipe(Atom.keepAlive),
+    max: Atom.writable(
+      () => Option.none<number>(),
+      (ctx, value: number) => {
+        ctx.setSelf(Option.some(value))
+      },
+    ).pipe(Atom.keepAlive),
+    value: Atom.make(Option.none<readonly [number, number]>()),
+    reset: Atom.fnSync((_: void, get) => {
+      get.set(self.value, Option.none())
+      get.refresh(self.min)
+      get.refresh(self.max)
+    }),
+  }
+  return self
+})
+
+export const allFilters = {
+  priceRange: filterAtom(
+    new Filter({
+      id: "@price",
+      name: "Price",
+      kind: "text",
+      valuePrefix: "$",
+    }),
+  ),
+  ratingRange: filterAtom(
+    new Filter({
+      id: "@rating",
+      name: "Rating",
+      kind: "slider",
+      valuePrefix: "",
+      facetValueOverride: {
+        start: 0,
+        end: 5,
+        endInclusive: true,
+      },
+    }),
+  ),
+}
+
+const resetFilters = (get: Atom.Context) => {
+  for (const filter of Object.values(allFilters)) {
+    get.set(filter.value, Option.none())
+  }
+}
+const resetFilterUi = (get: Atom.Context) => {
+  for (const filter of Object.values(allFilters)) {
+    get.refresh(filter.min)
+    get.refresh(filter.max)
+  }
+}
+
+export class EmptyQueryError extends Data.TaggedError("EmptyQueryError") {}
+
+export const resultsAtom = BunningsClient.runtime
+  .pull(
+    Effect.fnUntraced(function* (get) {
+      const client = yield* BunningsClient
+      const query = get(queryTrimmedAtom)
+      if (query === "") {
+        return Stream.fail(new EmptyQueryError())
+      }
+      yield* Effect.sleep(150)
+      if (query !== get.once(facetsAtom).forQuery) {
+        resetFilters(get)
+      }
+      const mailbox = yield* Mailbox.make<
+        ProductBaseInfo,
+        Unauthorized | RpcClientError.RpcClientError | EmptyQueryError
+      >(32)
+      yield* Effect.gen(function* () {
+        let offset = 0
+        while (true) {
+          const data = yield* client("search", {
+            query,
+            offset,
+            priceRange: get(allFilters.priceRange.value),
+            ratingRange: get(allFilters.ratingRange.value),
+          })
+          if (offset === 0 && get.once(facetsAtom).forQuery !== query) {
+            resetFilterUi(get)
+            get.set(facetsAtom, { forQuery: query, facets: data.facets })
+          }
+          yield* mailbox.offerAll(data.results)
+          offset += data.results.length
+          if (offset >= data.totalCount) {
+            break
+          }
+        }
+      }).pipe(Mailbox.into(mailbox), Effect.forkScoped)
+      return Mailbox.toStream(mailbox)
+    }, Stream.unwrapScoped),
+  )
+  .pipe(Atom.keepAlive)
+
+export const loadingAtom = Atom.map(resultsAtom, (_) => _.waiting)
+
+export const focusAtom = Atom.writable(
+  () => 0,
+  (ctx, _: void) => {
+    ctx.setSelf(ctx.get(focusAtom) + 1)
+  },
+)
+
+
+
+---
+File: /src/Search/Filters.tsx
+---
+
+import { useAtom, useAtomSet, useAtomValue } from "@effect-atom/atom-react"
+import { allFilters } from "./atoms"
+import { useRef } from "react"
+import { Label } from "@/components/ui/label"
+import { Slider } from "@/components/ui/slider"
+import { Input } from "@/components/ui/input"
+import * as Option from "effect/Option"
+
+export function Filters() {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 md:gap-4 px-2 md:px-0">
+      {Object.values(allFilters).map((filter) => (
+        <FilterControl key={filter.filter.id} filter={filter} />
+      ))}
+    </div>
+  )
+}
+
+type AllFilters = typeof allFilters
+
+function FilterControl({ filter }: { filter: AllFilters[keyof AllFilters] }) {
+  const range = useAtomValue(filter.facet)
+  const [min, setMin] = useAtom(filter.min)
+  const [max, setMax] = useAtom(filter.max)
+  const [value, setRange] = useAtom(filter.value)
+  const reset = useAtomSet(filter.reset)
+
+  const minInput = useRef<HTMLInputElement>(null)
+  const maxInput = useRef<HTMLInputElement>(null)
+
+  return Option.match(range, {
+    onNone: () => null,
+    onSome: ({ start, end }) => (
+      <div className="flex flex-col">
+        <Label className="text-primary">
+          {filter.filter.name}:
+          {Option.match(value, {
+            onNone: () => null,
+            onSome: () => (
+              <span
+                onClick={() => reset()}
+                className="text-gray-600 cursor-pointer"
+              >
+                (clear)
+              </span>
+            ),
+          })}
+        </Label>
+        <div className="h-1" />
+        <div className="flex-1 flex items-center min-h-7">
+          {filter.filter.kind === "slider" ? (
+            <Slider
+              min={Math.floor(start)}
+              max={Math.ceil(end)}
+              value={[
+                Option.getOrElse(min, () => Math.floor(start)),
+                Option.getOrElse(max, () => Math.ceil(end)),
+              ]}
+              onValueChange={([min, max]) => {
+                setMin(min)
+                setMax(max)
+              }}
+              onValueCommit={([min, max]) => {
+                setRange(Option.some([min, max]))
+              }}
+              formatValue={(value) => `${filter.filter.valuePrefix}${value}`}
+            />
+          ) : (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault()
+                e.stopPropagation()
+                minInput.current?.blur()
+                maxInput.current?.blur()
+                setRange(
+                  Option.some([
+                    Option.getOrElse(min, () => Math.floor(start)),
+                    Option.getOrElse(max, () => Math.ceil(end)),
+                  ]),
+                )
+              }}
+            >
+              <div className="flex gap-2 items-center">
+                <Input
+                  className="focus-visible:ring-secondary"
+                  ref={minInput}
+                  type="number"
+                  onChange={(e) => {
+                    const value = Number(e.target.value)
+                    setMin(isNaN(value) ? Math.floor(start) : value)
+                  }}
+                  onBlur={(e) => {
+                    if (e.target.value === "") return
+                    const value = Number(e.target.value)
+                    if (isNaN(value)) return
+                    setRange(
+                      Option.some([
+                        value,
+                        Option.getOrElse(max, () => Math.ceil(end)),
+                      ]),
+                    )
+                  }}
+                  value={Option.getOrElse(min, () => "")}
+                  placeholder={`${filter.filter.valuePrefix}${Math.floor(start)}`}
+                />
+                <div className="w-20 flex items-center">
+                  <hr className="h-[5px] bg-primary w-full" />
+                </div>
+                <Input
+                  className="focus-visible:ring-secondary"
+                  ref={maxInput}
+                  type="number"
+                  onChange={(e) => {
+                    const value = Number(e.target.value)
+                    setMax(isNaN(value) ? Math.ceil(end) : value)
+                  }}
+                  onBlur={(e) => {
+                    if (e.target.value === "") return
+                    const value = Number(e.target.value)
+                    if (isNaN(value)) return
+                    setRange(
+                      Option.some([
+                        Option.getOrElse(min, () => Math.floor(start)),
+                        value,
+                      ]),
+                    )
+                  }}
+                  value={Option.getOrElse(max, () => "")}
+                  placeholder={`${filter.filter.valuePrefix}${Math.ceil(end)}`}
+                />
+              </div>
+              <button type="submit" className="hidden">
+                Submit
+              </button>
+            </form>
+          )}
+        </div>
+      </div>
+    ),
+  })
+}
+
+
+
+---
+File: /src/Search/SearchResults.tsx
+---
+
+import {
+  Atom,
+  RegistryContext,
+  Result,
+  useAtomSet,
+  useAtomValue,
+} from "@effect-atom/atom-react"
+import { focusAtom, queryIsSetAtom, resultsAtom } from "./atoms"
+import { ProductBaseInfo } from "../../server/src/domain/Bunnings"
+import {
+  Card,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import { Skeleton } from "@/components/ui/skeleton"
+import { Link, useElementScrollRestoration } from "@tanstack/react-router"
+import { preloadAtom } from "@/Product/atoms"
+import { useCallback, useContext, useEffect, useRef, useState } from "react"
+import { BaseInfoKey } from "@/RpcClient"
+import { StarRating } from "@/components/ui/star-rating"
+import { StoreSelector } from "@/Stores/Selector"
+import { Label } from "@/components/ui/label"
+import { FavoriteButton } from "@/Favorites/Button"
+import { Button } from "@/components/ui/button"
+import { useScrollBottom } from "@/lib/useScrollBottom"
+import { ArrowUp } from "lucide-react"
+import { clearFavoritesAtom, favoritesAtom } from "@/Favorites/atoms"
+import { InstallButton } from "@/App/InstallButton"
+import { FulfillmentBadge } from "@/Product/FulfillmentBadge"
+import { Filters } from "./Filters"
+import * as Array from "effect/Array"
+import * as Cause from "effect/Cause"
+import { router } from "@/Router"
+import { useWindowVirtualizer } from "@tanstack/react-virtual"
+
+export function SearchResults() {
+  const queryIsSet = useAtomValue(queryIsSetAtom)
+  const results = useAtomValue(resultsAtom)
+  const pull = useAtomSet(resultsAtom)
+  useScrollBottom(() => {
+    pull()
+  })
+
+  if (!queryIsSet) {
+    return <StoreAndFavourites />
+  }
+
+  return (
+    <>
+      <div className="h-4" />
+      {Result.isSuccess(results) && <Filters />}
+      <div className="h-4" />
+      {Result.builder(results)
+        .onSuccess(({ items }) => <ResultsGrid results={items} />)
+        .onInitial(() => <ResultsSkeleton />)
+        .onErrorTag("EmptyQueryError", () => <ResultsSkeleton />)
+        .onErrorTag("NoSuchElementException", () => <NoResults />)
+        .onFailure((cause) => (
+          <div className="flex flex-col items-center justify-center h-full gap-4">
+            <div className="text-red-500">
+              An error occurred while fetching results.
+            </div>
+            {Cause.pretty(cause)}
+          </div>
+        ))
+        .render()}
+      <div className="fixed bottom-0 right-0 p-6 pb-safe flex flex-col transform-gpu">
+        <BackToTop />
+        <div className="h-6" />
+      </div>
+    </>
+  )
+}
+
+let lastRowHeight = 350
+
+function ResultsGrid({
+  results,
+}: {
+  readonly results: Array<ProductBaseInfo>
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const columns = useAtomValue(columnsAtom)
+  const scrollRestoration = useElementScrollRestoration({
+    getElement: () => window,
+  })
+
+  const virtualizer = useWindowVirtualizer({
+    initialOffset: scrollRestoration?.scrollY,
+    count: Math.ceil(results.length / columns.length),
+    estimateSize: () => lastRowHeight,
+    overscan: 3,
+    scrollMargin: ref.current?.offsetTop ?? 0,
+  })
+
+  return (
+    <div ref={ref} className="relative">
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualizer.getVirtualItems().map((item) => (
+          <div
+            className="flex gap-2 pb-2"
+            key={item.key}
+            ref={(el) => {
+              if (!el) return
+              lastRowHeight = el.scrollHeight
+              return virtualizer.measureElement(el)
+            }}
+            data-index={item.index}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${
+                item.start - virtualizer.options.scrollMargin
+              }px)`,
+            }}
+          >
+            {columns.map((col) => {
+              const index = item.index * columns.length + col
+              const product = results[index]
+              if (!product) return <div key={index} className="flex-1" />
+              return <ResultCard key={index} product={product} />
+            })}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+const getColumns = (width: number): Array<number> => {
+  if (width >= 1024) return Array.range(0, 3)
+  if (width >= 768) return Array.range(0, 2)
+  return Array.range(0, 1)
+}
+
+const columnsAtom = Atom.make((get) => {
+  const onResize = () => {
+    get.setSelf(getColumns(window.innerWidth))
+  }
+  window.addEventListener("resize", onResize)
+  get.addFinalizer(() => window.removeEventListener("resize", onResize))
+  return getColumns(window.innerWidth)
+})
+
+function ResultsSkeleton() {
+  return (
+    <div className="grid gap-2 grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+      {Array.makeBy(9, (i) => (
+        <SkeletonCard key={i} />
+      ))}
+    </div>
+  )
+}
+
+function ResultCard({ product }: { readonly product: ProductBaseInfo }) {
+  const regisry = useContext(RegistryContext)
+
+  const onPointerDown = useCallback(() => {
+    regisry.set(
+      preloadAtom,
+      new BaseInfoKey({ id: product.id, result: product }),
+    )
+  }, [product])
+
+  const onPointerUp = useCallback(() => {
+    router.navigate({
+      to: `/product/$id`,
+      params: { id: product.id },
+      search: (current) => current,
+    })
+  }, [product])
+
+  return (
+    <Link
+      className="flex-1"
+      to={`/product/$id`}
+      params={{ id: product.id }}
+      search={(current) => current}
+      onPointerDown={onPointerDown}
+      onMouseDown={(e) => {
+        if (e.button === 0) {
+          onPointerUp()
+        }
+      }}
+    >
+      <Card className="relative">
+        <div className="absolute top-2 left-2 right-2 flex">
+          <FavoriteButton product={product} variant="icon" />
+          <div className="flex-1" />
+          <FulfillmentBadge product={product} />
+        </div>
+        <div className="h-32 sm:h-48">
+          <img
+            src={product.images[0].thumbnailUrl}
+            alt={product.title}
+            className="h-full mx-auto"
+          />
+        </div>
+        <CardHeader className="px-4">
+          <CardTitle className="line-clamp-3 sm:line-clamp-2 h-[3lh] sm:h-[2lh]">
+            {product.title}
+          </CardTitle>
+          <CardDescription>
+            ${product.price}
+            <div className="h-1" />
+            <div className="flex gap-2">
+              <StarRating rating={product.rating} />
+              <span>({product.numberOfReviews})</span>
+            </div>
+          </CardDescription>
+        </CardHeader>
+      </Card>
+    </Link>
+  )
+}
+
+function SkeletonCard() {
+  return (
+    <div className="flex flex-col space-y-3">
+      <Skeleton className="aspect-square w-full rounded-xl" />
+      <div className="space-y-2">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-full" />
+      </div>
+    </div>
+  )
+}
+
+function NoResults() {
+  const focus = useAtomSet(focusAtom)
+  return (
+    <div className="flex flex-col items-center justify-center h-full gap-4">
+      <div className="text-gray-500">No results found.</div>
+      <Button onClick={() => focus()}>Try another search</Button>
+    </div>
+  )
+}
+
+function StoreAndFavourites() {
+  return (
+    <div className="flex flex-col items-start py-10 gap-10">
+      <div className="flex flex-col max-w-sm w-full">
+        <Label className="text-primary">Select your store:</Label>
+        <div className="h-2" />
+        <StoreSelector />
+      </div>
+
+      <FavoritesList />
+
+      <div className="fixed bottom-0 right-0 p-4 pb-safe flex flex-col">
+        <InstallButton />
+        <div className="h-4" />
+      </div>
+    </div>
+  )
+}
+
+function FavoritesList() {
+  const favorites = useAtomValue(
+    favoritesAtom,
+    Result.getOrElse(() => []),
+  )
+  const clear = useAtomSet(clearFavoritesAtom)
+
+  if (favorites.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="w-full flex flex-col gap-4">
+      <div className="text-primary font-medium text-sm flex gap-2">
+        Favourites:
+        <span onClick={() => clear()} className="text-gray-600 cursor-pointer">
+          (clear all)
+        </span>
+      </div>
+      <div className="grid gap-2 grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+        {favorites.map((result, i) => (
+          <ResultCard key={i} product={result} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function BackToTop() {
+  const [visible, setVisible] = useState(false)
+
+  useEffect(() => {
+    const handleScroll = () => {
+      setVisible(window.scrollY > 200)
+    }
+    window.addEventListener("scroll", handleScroll)
+    return () => {
+      window.removeEventListener("scroll", handleScroll)
+    }
+  }, [])
+
+  const scrollToTop = useAtomSet(focusAtom)
+
+  if (!visible) {
+    return null
+  }
+
+  return (
+    <Button
+      onClick={() => scrollToTop()}
+      className="bg-primary text-white cursor-pointer hover:bg-primary/90"
+      size="lg"
+    >
+      <ArrowUp strokeWidth={3} />
+    </Button>
+  )
+}
+
+
+
+---
+File: /src/Stores/atoms.ts
+---
+
+import { BunningsClient } from "@/RpcClient"
+import { Atom } from "@effect-atom/atom-react"
+import * as BrowserKeyValueStore from "@effect/platform-browser/BrowserKeyValueStore"
+import * as Geolocation from "@effect/platform-browser/Geolocation"
+import * as Effect from "effect/Effect"
+import * as Option from "effect/Option"
+import * as Schema from "effect/Schema"
+import * as Stream from "effect/Stream"
+import { SessionLocation } from "../../server/src/domain/Bunnings"
+import * as Layer from "effect/Layer"
+
+const runtime = Atom.runtime(
+  Geolocation.layer.pipe(Layer.merge(BunningsClient.layer)),
+)
+
+export const geoAtom = runtime.atom(
+  Effect.gen(function* () {
+    const geo = yield* Geolocation.Geolocation
+    return yield* geo.getCurrentPosition()
+  }),
+)
+
+export const storesAtom = runtime
+  .atom(
+    Effect.fnUntraced(function* (get) {
+      const client = yield* BunningsClient
+      const location = yield* get.result(geoAtom)
+      return client("stores", {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      }).pipe(Stream.take(10), Stream.accumulate)
+    }, Stream.unwrap),
+  )
+  .pipe(Atom.keepAlive)
+
+export const currentLocationAtom = Atom.kvs<Option.Option<SessionLocation>>({
+  runtime: Atom.runtime(BrowserKeyValueStore.layerLocalStorage),
+  key: "currentLocation",
+  schema: Schema.Option(SessionLocation),
+  defaultValue: Option.none,
+}).pipe(Atom.keepAlive)
+
+
+
+---
+File: /src/Stores/Selector.tsx
+---
+
+import {
+  RegistryContext,
+  Result,
+  useAtomSet,
+  useAtomValue,
+} from "@effect-atom/atom-react"
+import { currentLocationAtom, storesAtom } from "./atoms"
+import { MapPin } from "lucide-react"
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import { useContext, useState } from "react"
+import { SessionLocation } from "../../server/src/domain/Bunnings"
+import { Skeleton } from "@/components/ui/skeleton"
+import * as Option from "effect/Option"
+import * as Chunk from "effect/Chunk"
+
+export function StoreSelector() {
+  const registry = useContext(RegistryContext)
+  const [open, setOpen] = useState(false)
+  const currentLocation = useAtomValue(currentLocationAtom)
+  const setLocation = useAtomSet(currentLocationAtom)
+  return (
+    <div className="w-full">
+      <Select
+        onOpenChange={setOpen}
+        open={open}
+        value={Option.match(currentLocation, {
+          onNone: () => "",
+          onSome: (location) => String(location.code),
+        })}
+        onValueChange={(value) => {
+          registry.get(storesAtom).pipe(
+            Result.value,
+            Option.flatMap(Chunk.findFirst((store) => store.name === value)),
+            Option.map((store) => {
+              setLocation(Option.some(SessionLocation.fromStore(store)))
+            }),
+          )
+        }}
+      >
+        <SelectTrigger className="w-full border-2 border-primary text-primary rounded-md focus:ring-primary">
+          <div className="flex items-center">
+            <MapPin className="w-5 h-5 mr-2 text-secondary" />
+            <SelectValue placeholder="Select your store" />
+          </div>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectGroup>
+            <SelectLabel className="font-bold">Select your store</SelectLabel>
+            {open ? (
+              <StoreItems currentLocation={currentLocation} />
+            ) : (
+              Option.match(currentLocation, {
+                onNone: () => null,
+                onSome: (location) => (
+                  <SelectItem
+                    value={location.code}
+                    className="py-3 cursor-pointer hover:bg-gray-100"
+                  >
+                    {location.city}
+                  </SelectItem>
+                ),
+              })
+            )}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
+    </div>
+  )
+}
+
+function StoreItems({
+  currentLocation,
+}: {
+  readonly currentLocation: Option.Option<SessionLocation>
+}) {
+  return Result.builder(useAtomValue(storesAtom))
+    .onSuccess((stores) => (
+      <>
+        {Array.from(stores, (store) => (
+          <SelectItem
+            key={store.name}
+            value={store.name}
+            className="py-3 cursor-pointer hover:bg-gray-100"
+          >
+            {store.displayName}
+          </SelectItem>
+        ))}
+      </>
+    ))
+    .orElse(() => (
+      <>
+        {Option.match(currentLocation, {
+          onNone: () => null,
+          onSome: (location) => (
+            <SelectItem
+              value={location.code}
+              className="py-3 cursor-pointer hover:bg-gray-100"
+            >
+              {location.city}
+            </SelectItem>
+          ),
+        })}
+        {Array.from({ length: 5 }, (_, i) => (
+          <Skeleton key={i} className="h-8 flex-1 m-2" />
+        ))}
+      </>
+    ))
+}
+
+
+
+---
+File: /src/App.tsx
+---
+
+import { RouterProvider } from "@tanstack/react-router"
+import { useRegisterSW } from "virtual:pwa-register/react"
+import { RegistryProvider, useAtomMount } from "@effect-atom/atom-react"
+import { loginAtom } from "./Search/atoms"
+import { router } from "./Router"
+import { EventLogClient } from "./EventLog"
+
+export default function App() {
+  useRegisterSW({
+    immediate: true,
+  })
+
+  return (
+    <RegistryProvider>
+      <RouterProvider router={router} />
+      <Session />
+    </RegistryProvider>
+  )
+}
+
+function Session() {
+  useAtomMount(loginAtom)
+  useAtomMount(EventLogClient.runtime)
+  return null
+}
+
+
+
+---
+File: /src/EventLog.ts
+---
+
+import { Identity } from "@effect/experimental/EventLog"
+import { Effect, Layer } from "effect"
+import { AllEvents } from "./Events"
+import { Socket } from "@effect/platform"
+import { FavoritesLayer } from "./Favorites"
+import * as EventLog from "@effect/experimental/EventLog"
+import * as EventJournal from "@effect/experimental/EventJournal"
+import * as EventLogEncryption from "@effect/experimental/EventLogEncryption"
+import { Atom } from "@effect-atom/atom-react"
+import * as EventLogRemote from "@effect/experimental/EventLogRemote"
+import { kvsRuntime } from "./atoms/kvs"
+import * as Schema from "effect/Schema"
+import * as Option from "effect/Option"
+import * as Function from "effect/Function"
+
+const EventLogLayer = EventLog.layer(AllEvents).pipe(
+  Layer.provide([FavoritesLayer]),
+  Layer.provide(EventJournal.layerIndexedDb()),
+  Layer.provide([
+    EventLogEncryption.layerSubtle,
+    Socket.layerWebSocketConstructorGlobal,
+  ]),
+)
+
+const makeClient = EventLog.makeClient(AllEvents)
+
+export class EventLogClient extends Effect.Service<EventLogClient>()(
+  "EventLogClient",
+  {
+    effect: makeClient,
+  },
+) {
+  static runtime = Atom.runtime((get) => {
+    const remoteUrl = get(remoteUrlAtom)
+    return this.Default.pipe(
+      Option.isSome(remoteUrl)
+        ? Layer.provide(
+            EventLogRemote.layerWebSocketBrowser(remoteUrl.value.toString()),
+          )
+        : Function.identity,
+      Layer.provideMerge(EventLogLayer),
+      Layer.provide(Layer.succeed(Identity, get(identityAtom))),
+    )
+  })
+}
+
+export const identityAtom = Atom.kvs({
+  runtime: kvsRuntime,
+  key: "identity",
+  schema: Identity.Schema,
+  defaultValue: Identity.makeRandom,
+})
+
+export const identityStringAtom = Atom.writable(
+  (get) => Identity.encodeString(get(identityAtom)),
+  (ctx, s: string) => ctx.set(identityAtom, Identity.decodeString(s)),
+)
+
+export const remoteUrlAtom = Atom.kvs({
+  runtime: kvsRuntime,
+  key: "remoteUrl",
+  schema: Schema.Option(Schema.URL),
+  defaultValue: Option.none,
+})
+
+
+
+---
+File: /src/Events.ts
+---
+
+import * as EventLog from "@effect/experimental/EventLog"
+import { FavoriteEvents } from "./Favorites/Events"
+
+export class AllEvents extends EventLog.schema(FavoriteEvents) {}
+
+
+
+---
+File: /src/Favorites.ts
+---
+
+import { Atom } from "@effect-atom/atom-react"
+import { ProductBaseInfo } from "../server/src/domain/Bunnings"
+import * as Schema from "effect/Schema"
+import * as BrowserKeyValueStore from "@effect/platform-browser/BrowserKeyValueStore"
+import { EventLog } from "@effect/experimental"
+import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
+import { FavoriteEvents } from "./Favorites/Events"
+import * as KeyValueStore from "@effect/platform/KeyValueStore"
+import * as Option from "effect/Option"
+import * as Reactivity from "@effect/experimental/Reactivity"
+import * as Array from "effect/Array"
+
+export class FavoritesRepo extends Effect.Service<FavoritesRepo>()(
+  "FavoritesRepo",
+  {
+    dependencies: [BrowserKeyValueStore.layerLocalStorage, Reactivity.layer],
+    effect: Effect.gen(function* () {
+      const reactivity = yield* Reactivity.Reactivity
+      const store = (yield* KeyValueStore.KeyValueStore).forSchema(
+        Schema.Array(ProductBaseInfo),
+      )
+      const map = (yield* store.get("favorites")).pipe(
+        Option.map(
+          (products) => new Map(products.map((p) => [p.id, p] as const)),
+        ),
+        Option.getOrElse(() => new Map<string, ProductBaseInfo>()),
+      )
+
+      const all = Effect.sync(() => Array.reverse(map.values()))
+      const allReactive = reactivity.stream(["favorites"], all)
+      const add = (product: ProductBaseInfo) =>
+        Effect.suspend(() => {
+          map.set(product.id, product)
+          return store
+            .set("favorites", Array.fromIterable(map.values()))
+            .pipe(Effect.orDie)
+        })
+      const remove = (id: string) =>
+        Effect.suspend(() => {
+          if (!map.has(id)) {
+            return Effect.void
+          }
+          map.delete(id)
+          return store
+            .set("favorites", Array.fromIterable(map.values()))
+            .pipe(Effect.orDie)
+        })
+      const clear = Effect.suspend(() => {
+        map.clear()
+        return store.set("favorites", []).pipe(Effect.orDie)
+      })
+      return { all, allReactive, add, remove, clear } as const
+    }),
+  },
+) {
+  static runtime = Atom.runtime(this.Default)
+}
+
+const FavoritesEventsLayer = EventLog.group(
+  FavoriteEvents,
+  Effect.fnUntraced(function* (handlers) {
+    const repo = yield* FavoritesRepo
+
+    return handlers
+      .handle("FavoriteAdd", ({ payload }) => repo.add(payload))
+      .handle("FavoriteRemove", ({ payload }) => repo.remove(payload))
+      .handle("FavoritesClear", () => repo.clear)
+  }),
+).pipe(Layer.provide(FavoritesRepo.Default))
+
+const FavoritesCompactionLive = EventLog.groupCompaction(
+  FavoriteEvents,
+  Effect.fnUntraced(function* ({ events, write }) {
+    const map = new Map<string, ProductBaseInfo>()
+    const removes = new Set<string>()
+    let clear = false
+    for (const event of events) {
+      switch (event._tag) {
+        case "FavoriteAdd": {
+          map.set(event.payload.id, event.payload)
+          break
+        }
+        case "FavoriteRemove": {
+          if (map.has(event.payload)) {
+            map.delete(event.payload)
+          } else if (!clear) {
+            removes.add(event.payload)
+          }
+          break
+        }
+        case "FavoritesClear": {
+          map.clear()
+          removes.clear()
+          clear = true
+          break
+        }
+      }
+    }
+    if (clear) {
+      yield* write("FavoritesClear", undefined)
+    }
+    for (const product of map.values()) {
+      yield* write("FavoriteAdd", product)
+    }
+    for (const id of removes) {
+      yield* write("FavoriteRemove", id)
+    }
+  }),
+)
+
+const FavoritesReactivityLive = EventLog.groupReactivity(FavoriteEvents, [
+  "favorites",
+])
+
+export const FavoritesLayer = Layer.mergeAll(
+  FavoritesEventsLayer,
+  FavoritesCompactionLive,
+  FavoritesReactivityLive,
+)
+
+
+
+---
+File: /src/index.css
+---
+
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@tailwind utilities;
+
+@plugin "@tailwindcss/typography";
+
+@layer utilities {
+  .pb-safe {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.145 0 0);
+  --primary: #0d5257;
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: #db2a1c;
+  --secondary-foreground: #ffffff;
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: var(--secondary);
+  --accent-foreground: var(--secondary-foreground);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.708 0 0);
+  --chart-1: oklch(0.646 0.222 41.116);
+  --chart-2: oklch(0.6 0.118 184.704);
+  --chart-3: oklch(0.398 0.07 227.392);
+  --chart-4: oklch(0.828 0.189 84.429);
+  --chart-5: oklch(0.769 0.188 70.08);
+  --sidebar: oklch(0.985 0 0);
+  --sidebar-foreground: oklch(0.145 0 0);
+  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.97 0 0);
+  --sidebar-accent-foreground: oklch(0.205 0 0);
+  --sidebar-border: oklch(0.922 0 0);
+  --sidebar-ring: oklch(0.708 0 0);
+}
+
+html,
+body {
+  background-color: #0d5257;
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.556 0 0);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+
+
+---
+File: /src/main.tsx
+---
+
+import React from "react"
+import ReactDOM from "react-dom/client"
+import App from "./App.tsx"
+import { Atom } from "@effect-atom/atom-react"
+import { TracerLayer } from "./Tracing.ts"
+import * as ConfigProvider from "effect/ConfigProvider"
+import * as Layer from "effect/Layer"
+import * as Logger from "effect/Logger"
+import "./index.css"
+
+const configProvider = ConfigProvider.fromJson(import.meta.env)
+
+Atom.runtime.addGlobalLayer(
+  TracerLayer.pipe(
+    Layer.provideMerge(Layer.setConfigProvider(configProvider)),
+    Layer.provideMerge(Logger.pretty),
+  ),
+)
+
+ReactDOM.createRoot(document.getElementById("root")!).render(
+  <React.StrictMode>
+    <App />
+  </React.StrictMode>,
+)
+
+
+
+---
+File: /src/Router.ts
+---
+
+import { createRouter } from "@tanstack/react-router"
+import { routeTree } from "./routeTree.gen"
+import { Atom } from "@effect-atom/atom-react"
+
+export const router = createRouter({
+  routeTree,
+  defaultPreload: "render",
+  defaultPendingMinMs: 0,
+  scrollRestoration: true,
+})
+
+declare module "@tanstack/react-router" {
+  interface Register {
+    router: typeof router
+  }
+}
+
+export const locationAtom = Atom.make((get) => {
+  get.addFinalizer(
+    router.subscribe("onRendered", (_) => {
+      get.setSelf(_.toLocation)
+    }),
+  )
+  return router.state.location
+})
+
+
+
+---
+File: /src/routeTree.gen.ts
+---
+
+/* eslint-disable */
+
+// @ts-nocheck
+
+// noinspection JSUnusedGlobalSymbols
+
+// This file was automatically generated by TanStack Router.
+// You should NOT make any changes in this file as it will be overwritten.
+// Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
+
+import { Route as rootRouteImport } from './routes/__root'
+import { Route as IndexRouteImport } from './routes/index'
+import { Route as ProductIdRouteImport } from './routes/product/$id'
+
+const IndexRoute = IndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ProductIdRoute = ProductIdRouteImport.update({
+  id: '/product/$id',
+  path: '/product/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+
+export interface FileRoutesByFullPath {
+  '/': typeof IndexRoute
+  '/product/$id': typeof ProductIdRoute
+}
+export interface FileRoutesByTo {
+  '/': typeof IndexRoute
+  '/product/$id': typeof ProductIdRoute
+}
+export interface FileRoutesById {
+  __root__: typeof rootRouteImport
+  '/': typeof IndexRoute
+  '/product/$id': typeof ProductIdRoute
+}
+export interface FileRouteTypes {
+  fileRoutesByFullPath: FileRoutesByFullPath
+  fullPaths: '/' | '/product/$id'
+  fileRoutesByTo: FileRoutesByTo
+  to: '/' | '/product/$id'
+  id: '__root__' | '/' | '/product/$id'
+  fileRoutesById: FileRoutesById
+}
+export interface RootRouteChildren {
+  IndexRoute: typeof IndexRoute
+  ProductIdRoute: typeof ProductIdRoute
+}
+
+declare module '@tanstack/react-router' {
+  interface FileRoutesByPath {
+    '/': {
+      id: '/'
+      path: '/'
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/product/$id': {
+      id: '/product/$id'
+      path: '/product/$id'
+      fullPath: '/product/$id'
+      preLoaderRoute: typeof ProductIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+  }
+}
+
+const rootRouteChildren: RootRouteChildren = {
+  IndexRoute: IndexRoute,
+  ProductIdRoute: ProductIdRoute,
+}
+export const routeTree = rootRouteImport
+  ._addFileChildren(rootRouteChildren)
+  ._addFileTypes<FileRouteTypes>()
+
+
+
+---
+File: /src/RpcClient.ts
+---
+
+import * as Socket from "@effect/platform/Socket"
+import * as RpcClient from "@effect/rpc/RpcClient"
+import * as RpcMiddleware from "@effect/rpc/RpcMiddleware"
+import * as RpcSerialization from "@effect/rpc/RpcSerialization"
+import * as Config from "effect/Config"
+import * as Data from "effect/Data"
+import * as Effect from "effect/Effect"
+import * as Equal from "effect/Equal"
+import * as Hash from "effect/Hash"
+import * as Layer from "effect/Layer"
+import { ProductBaseInfo } from "server/src/domain/Bunnings"
+import { AuthMiddleware } from "../server/src/domain/Auth"
+import { Rpcs } from "../server/src/domain/Rpc"
+import { AtomRpc } from "@effect-atom/atom-react"
+
+const AuthLayer = RpcMiddleware.layerClient(
+  AuthMiddleware,
+  Effect.gen(function* () {
+    const sessionId =
+      localStorage.getItem("sessionId") ??
+      String(Math.round(Math.random() * 10000000000))
+    localStorage.setItem("sessionId", sessionId)
+    return Effect.fnUntraced(function* ({ request }) {
+      return {
+        ...request,
+        headers: {
+          ...request.headers,
+          "session-id": sessionId,
+        },
+      }
+    })
+  }),
+)
+
+const SocketLayer = Layer.unwrapEffect(
+  Effect.gen(function* () {
+    const url = yield* Config.string("VITE_API_URL")
+    return Socket.layerWebSocket(url)
+  }),
+)
+
+export class BunningsClient extends AtomRpc.Tag<BunningsClient>()(
+  "BunningsClient",
+  {
+    group: Rpcs,
+    protocol: RpcClient.layerProtocolSocket({
+      retryTransientErrors: true,
+    }).pipe(
+      Layer.provide(RpcSerialization.layerJson),
+      Layer.provide(SocketLayer),
+      Layer.provide(Socket.layerWebSocketConstructorGlobal),
+      Layer.merge(AuthLayer),
+      Layer.orDie,
+    ),
+  },
+) {}
+
+export class BaseInfoKey extends Data.Class<{
+  id: string
+  result?: ProductBaseInfo
+}> {
+  [Equal.symbol](that: BaseInfoKey) {
+    return this.id === that.id
+  }
+  [Hash.symbol]() {
+    return Hash.string(this.id)
+  }
+}
+
+export class SearchQuery extends Data.Class<{
+  query: string
+  offset: number
+}> {}
+
+
+
+---
+File: /src/sw.ts
+---
+
+/// <reference lib="webworker" />
+import {
+  cleanupOutdatedCaches,
+  createHandlerBoundToURL,
+  precacheAndRoute,
+} from "workbox-precaching"
+import { NavigationRoute, registerRoute } from "workbox-routing"
+
+declare let self: ServiceWorkerGlobalScope
+
+self.addEventListener("message", (event) => {
+  if (!event.data) return
+  switch (event.data.type) {
+    case "SKIP_WAITING":
+      return self.skipWaiting()
+  }
+})
+
+// self.__WB_MANIFEST is default injection point
+precacheAndRoute(self.__WB_MANIFEST)
+
+// clean old assets
+cleanupOutdatedCaches()
+
+// to allow work offline
+registerRoute(new NavigationRoute(createHandlerBoundToURL("index.html")))
+
+
+
+---
+File: /src/Tracing.ts
+---
+
+import * as OtlpTracer from "@effect/opentelemetry/OtlpTracer"
+import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
+import * as Config from "effect/Config"
+import * as Effect from "effect/Effect"
+import * as Layer from "effect/Layer"
+import * as Option from "effect/Option"
+import * as Redacted from "effect/Redacted"
+
+export const TracerLayer = Layer.unwrapEffect(
+  Effect.gen(function* () {
+    const apiKey = yield* Config.redacted("VITE_HONEYCOMB_API_KEY").pipe(
+      Config.option,
+    )
+    if (Option.isNone(apiKey)) {
+      return Layer.empty
+    }
+    return OtlpTracer.layer({
+      url: "https://api.honeycomb.io/v1/traces",
+      headers: {
+        "X-Honeycomb-Team": Redacted.value(apiKey.value),
+        "X-Honeycomb-Dataset": "bunnings-lite",
+      },
+      resource: {
+        serviceName: "bunnings-client",
+      },
+    }).pipe(Layer.provide(FetchHttpClient.layer))
+  }),
+)
+
+
+
+---
+File: /src/vite-env.d.ts
+---
+
+/// <reference types="vite/client" />
+/// <reference types="vite-plugin-pwa/react" />
+
+
+
+---
+File: /index.html
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Bunnings Lite</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
+
+
+---
+File: /vite.config.ts
+---
+
+import { VitePWA } from "vite-plugin-pwa"
+import { defineConfig } from "vite"
+import react from "@vitejs/plugin-react"
+import * as path from "node:path"
+import { TanStackRouterVite } from "@tanstack/router-plugin/vite"
+import tailwindcss from "@tailwindcss/vite"
+
+// https://vitejs.dev/config/
+export default defineConfig({
+  plugins: [
+    TanStackRouterVite(),
+    react(),
+    tailwindcss(),
+    VitePWA({
+      registerType: "autoUpdate",
+      injectRegister: "auto",
+
+      pwaAssets: {
+        disabled: false,
+        config: true,
+      },
+
+      manifest: {
+        id: "bunnings.timsmart.co",
+        name: "Bunnings Lite",
+        short_name: "Bunnings Lite",
+        description: "A lightweight version of Bunnings",
+        theme_color: "#0d5257",
+        background_color: "#0d5257",
+        shortcuts: [],
+        launch_handler: {
+          client_mode: "navigate-existing",
+        },
+      },
+
+      workbox: {
+        globPatterns: ["**/*.{js,css,html,svg,png,ico,wasm}"],
+        cleanupOutdatedCaches: true,
+        clientsClaim: true,
+        maximumFileSizeToCacheInBytes: 6_000_000,
+      },
+
+      devOptions: {
+        enabled: false,
+        navigateFallback: "index.html",
+        suppressWarnings: true,
+        type: "module",
+      },
+    }),
+  ],
+
+  build: {
+    minify: false,
+    terserOptions: {
+      compress: false,
+      mangle: false,
+    },
+  },
+
+  resolve: {
+    alias: {
+      "@": path.resolve(__dirname, "src"),
+    },
+  },
+})
+

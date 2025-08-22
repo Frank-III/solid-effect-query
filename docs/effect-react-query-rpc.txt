@@ -1,0 +1,78 @@
+import * as FetchHttpClient from "@effect/platform/FetchHttpClient"
+import * as Rpc from "@effect/rpc/Rpc"
+import * as RpcClient from "@effect/rpc/RpcClient"
+import * as RpcGroup from "@effect/rpc/RpcGroup"
+import * as RpcSerialization from "@effect/rpc/RpcSerialization"
+import type { UseQueryResult } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query"
+import { identity } from "effect"
+import * as Cause from "effect/Cause"
+import type * as Context from "effect/Context"
+import * as Effect from "effect/Effect"
+import * as Exit from "effect/Exit"
+import * as Layer from "effect/Layer"
+import * as ManagedRuntime from "effect/ManagedRuntime"
+
+export type UseQueryOpts<TData = unknown, TError = Error> = Omit<
+  Parameters<typeof useQuery<TData, TError>>[0],
+  "queryKey" | "queryFn"
+>
+
+export const makeUseRpcQuery = <
+  I,
+  S extends { readonly client: RpcClient.RpcClient.Flat<any> },
+  Rpcs
+    extends (S extends { readonly client: RpcClient.RpcClient.Flat<infer R> }
+      ? R
+      : never),
+  E
+>(
+  clientTag: Context.Tag<I, S>,
+  runtime: ManagedRuntime.ManagedRuntime<I, E>
+) =>
+<
+  const Tag extends Rpcs["_tag"],
+  Current extends Rpc.ExtractTag<Rpcs, Tag>,
+  Success extends Rpc.Success<Current>,
+  Error extends Rpc.Error<Current>
+>(
+  tag: Tag,
+  payload: Rpc.PayloadConstructor<Current>,
+  opts?: UseQueryOpts<Success, Error>
+): UseQueryResult<Success, Error> =>
+  useQuery<Success, Error>({
+    ...opts,
+    queryKey: [tag, JSON.stringify(payload)],
+    queryFn: ({ signal }) =>
+      runtime.runPromiseExit(
+        Effect.flatMap(clientTag, ({ client }) => client(tag, payload)),
+        { signal }
+      ).then(Exit.match({
+        onFailure: (cause) => Promise.reject(Cause.squash(cause)),
+        onSuccess: identity
+      }))
+  })
+
+
+// usage
+
+class MyRpcs extends RpcGroup.make(
+  Rpc.make("doSomething")
+) {}
+
+class MyRpcClient extends Effect.Service<MyRpcClient>()("MyRpcClient", {
+  scoped: Effect.all({
+    client: RpcClient.make(MyRpcs, { flatten: true })
+  }),
+  dependencies: [
+    RpcClient.layerProtocolHttp({
+      url: "http://localhost:3000/rpc"
+    }).pipe(
+      Layer.provide([FetchHttpClient.layer, RpcSerialization.layerNdjson])
+    )
+  ]
+}) {}
+
+const runtime = ManagedRuntime.make(MyRpcClient.Default)
+
+const useMyRpc = makeUseRpcQuery(MyRpcClient, runtime)

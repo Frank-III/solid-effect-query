@@ -1,0 +1,37 @@
+{
+  "name": "solid-effect-query",
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@tanstack/solid-query": "^5.0.0",
+    "effect": "^3.0.0",
+    "solid-js": "^1.8.0"
+  },
+  "devDependencies": {
+    "@solidjs/testing-library": "^0.8.0",
+    "@tanstack/solid-query": "^5.0.0",
+    "effect": "^3.0.0",
+    "solid-js": "^1.8.0",
+    "tsdown": "^0.14.1",
+    "vite-plugin-solid": "^2.11.0",
+    "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "@solid-primitives/context": "^0.3.2"
+  }
+}

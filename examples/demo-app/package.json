@@ -1,0 +1,38 @@
+{
+  "name": "demo-app",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "tsx src/server/index.ts",
+    "server:dev": "tsx --watch src/server/index.ts",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@effect/platform": "^0.90.4",
+    "@effect/platform-browser": "^0.70.0",
+    "@tanstack/solid-query": "^5.0.0",
+    "@tanstack/solid-query-devtools": "^5.0.0",
+    "effect": "^3.0.0",
+    "solid-effect-query": "workspace:*",
+    "solid-effect-query-http-api": "workspace:*",
+    "solid-effect-query-rpc": "workspace:*",
+    "solid-js": "^1.8.0"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "^0.96.0",
+    "@effect/rpc": "^0.69.0",
+    "@effect/rpc-http": "^0.52.4",
+    "@types/node": "^24.3.0",
+    "autoprefixer": "^10.4.14",
+    "postcss": "^8.4.24",
+    "tailwindcss": "^3.3.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.3",
+    "vite": "^7.1.2",
+    "vite-plugin-solid": "^2.11.0"
+  }
+}
