@@ -2,7 +2,6 @@ import {
   HttpApiBuilder,
   HttpServerRequest,
   HttpApiError,
-  HttpServerResponse,
   HttpRouter,
 } from "@effect/platform";
 import { Layer, Effect, Ref } from "effect";
@@ -34,9 +33,7 @@ const HttpTodosLive = HttpApiBuilder.group(HttpApi, "todos", (handlers) =>
           const todos = yield* Ref.get(todosRef);
           const todo = todos.find((t) => t.id === id);
           if (!todo) {
-            return yield* Effect.fail(
-              new HttpApiError.NotFound(),
-            );
+            return yield* Effect.fail(new HttpApiError.NotFound());
           }
           return todo;
         }),
@@ -58,9 +55,7 @@ const HttpTodosLive = HttpApiBuilder.group(HttpApi, "todos", (handlers) =>
           const todos = yield* Ref.get(todosRef);
           const index = todos.findIndex((t) => t.id === id);
           if (index === -1) {
-            return yield* Effect.fail(
-              new HttpApiError.NotFound(),
-            );
+            return yield* Effect.fail(new HttpApiError.NotFound());
           }
           const updated = new Todo({
             ...todos[index],
@@ -82,9 +77,7 @@ const HttpTodosLive = HttpApiBuilder.group(HttpApi, "todos", (handlers) =>
           const todos = yield* Ref.get(todosRef);
           const exists = todos.some((t) => t.id === id);
           if (!exists) {
-            return yield* Effect.fail(
-              new HttpApiError.NotFound(),
-            );
+            return yield* Effect.fail(new HttpApiError.NotFound());
           }
           yield* Ref.update(todosRef, (todos) =>
             todos.filter((t) => t.id !== id),
@@ -106,9 +99,7 @@ const HttpUsersLive = HttpApiBuilder.group(HttpApi, "users", (handlers) =>
       Effect.gen(function* () {
         const user = users.find((u) => u.email === payload.email);
         if (!user || payload.password !== "password") {
-          return yield* Effect.fail(
-              new HttpApiError.Unauthorized(),
-          );
+          return yield* Effect.fail(new HttpApiError.Unauthorized());
         }
         return { token: `token-${user.id}` };
       }),
@@ -123,18 +114,14 @@ const AuthenticationLive = Layer.effect(
     const authHeader = request.headers["authorization"];
 
     if (!authHeader?.startsWith("Bearer token-")) {
-      return yield* Effect.fail(
-            new HttpApiError.Unauthorized(),
-      );
+      return yield* Effect.fail(new HttpApiError.Unauthorized());
     }
 
     const userId = parseInt(authHeader.replace("Bearer token-", ""));
     const user = users.find((u) => u.id === userId);
 
     if (!user) {
-      return yield* Effect.fail(
-            new HttpApiError.Unauthorized(),
-      );
+      return yield* Effect.fail(new HttpApiError.Unauthorized());
     }
 
     return user;
@@ -149,14 +136,11 @@ const ApiLive = Layer.mergeAll(
 );
 
 // Create the API router
-const apiRouter = HttpApiBuilder.toWebHandler(HttpApi, {
-  middleware: ApiLive
-})
+export const apiRouter = HttpApiBuilder.toWebHandler(HttpApi, {
+  middleware: ApiLive,
+});
 
-// Create the main app
-export const app = HttpRouter.empty.pipe(
-  HttpRouter.get("/health", HttpServerResponse.json({ status: "ok" })),
-  HttpRouter.mount("/api", apiRouter)
-);
+// Export the app without mounting (let the server handle mounting)
+export const app = apiRouter;
 
-export const HttpApiLive = Layer.succeed(HttpRouter.Tag, app);
+export const HttpApiLive = ApiLive;

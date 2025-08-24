@@ -6,8 +6,9 @@ export default defineConfig({
   plugins: [
     solid(),
     effectServer({
-      serverFile: './src/server/basic.ts',
-      serverPort: 3001
+      serverFile: './src/server/rpc-dev-server.ts',
+      serverPort: 3001,
+      useEnvironmentApi: true
     })
   ],
   server: {
@@ -15,9 +16,15 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:3001',
-        changeOrigin: true
+        changeOrigin: true,
+        ws: true
       },
       '/rpc': {
+        target: 'http://localhost:3001',
+        changeOrigin: true,
+        ws: true
+      },
+      '/health': {
         target: 'http://localhost:3001',
         changeOrigin: true
       }
