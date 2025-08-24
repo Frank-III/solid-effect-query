@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [
     solid(),
     effectServer({
-      serverFile: './src/server/rpc-dev-server.ts',
+      serverFile: './src/dev-server.ts',
       serverPort: 3001,
       useEnvironmentApi: true
     })

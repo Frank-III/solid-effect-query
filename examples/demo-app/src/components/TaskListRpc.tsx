@@ -9,21 +9,25 @@ export function TaskListRpc() {
   const tasksQuery = useTasksQuery('getTasks', () => ({}))
   
   const createTaskMutation = useTasksMutation('createTask', () => ({
-    onSuccess: () => {
+    onSuccess: (data) => {
+      console.log('Task created successfully:', data)
       setNewTaskTitle('')
-      queryClient.invalidateQueries({ queryKey: ['tasks.rpc'] })
+      queryClient.invalidateQueries({ queryKey: ['getTasks'] })
+    },
+    onError: (error) => {
+      console.error('Failed to create task:', error)
     }
   }))
   
   const updateTaskMutation = useTasksMutation('updateTask', () => ({
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks.rpc'] })
+      queryClient.invalidateQueries({ queryKey: ['getTasks'] })
     }
   }))
   
   const deleteTaskMutation = useTasksMutation('deleteTask', () => ({
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['tasks.rpc'] })
+      queryClient.invalidateQueries({ queryKey: ['getTasks'] })
     }
   }))
   

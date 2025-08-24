@@ -1,5 +1,6 @@
 import type { Plugin, ViteDevServer } from 'vite'
 import { isRunnableDevEnvironment } from 'vite'
+import * as Effect from 'effect/Effect'
 
 interface EffectServerOptions {
   /**
@@ -95,7 +96,7 @@ export function effectServer(options: EffectServerOptions): Plugin {
           throw new Error('Server environment is not runnable')
         }
 
-        console.log('🎭 Effect Server Plugin: Starting dev server...')
+        Effect.log('🎭 Effect Server Plugin: Starting dev server...').pipe(Effect.runSync)
         
         try {
           // Import and run the server file
@@ -104,24 +105,23 @@ export function effectServer(options: EffectServerOptions): Plugin {
             throw e
           })
           
-          console.log(`✅ Effect server started successfully`)
+          Effect.log('✅ Effect server started successfully').pipe(Effect.runSync)
         } catch (error) {
           console.error('❌ Failed to start Effect server:', error)
           // Don't throw to allow Vite to continue
         }
       } else {
         // Legacy approach for older Vite versions
-        console.log('⚠️  Using legacy server startup (consider upgrading to Vite 6+)')
-        
-        // We could spawn a subprocess here if needed
-        // For now, we'll just log a warning
-        console.log(`📝 Please run your server separately: node ${serverFile}`)
+        Effect.gen(function* () {
+          yield* Effect.log('⚠️  Using legacy server startup (consider upgrading to Vite 6+)')
+          yield* Effect.log(`📝 Please run your server separately: node ${serverFile}`)
+        }).pipe(Effect.runSync)
       }
     },
     
     // Handle build for production
     async buildEnd() {
-      console.log('📦 Effect server build completed')
+      Effect.log('📦 Effect server build completed').pipe(Effect.runSync)
     },
   }
 }

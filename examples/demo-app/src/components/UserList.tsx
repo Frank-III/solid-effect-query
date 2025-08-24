@@ -2,6 +2,7 @@ import { For, Show, createSignal } from "solid-js";
 import { makeHttpApiQuery, makeHttpApiMutation } from "solid-effect-query-http-api";
 import { UsersApi } from "../api/users.api";
 import { ManagedRuntime, Layer } from "effect";
+import * as Effect from "effect/Effect";
 
 // Create query and mutation hooks for the Users API
 const useUsersQuery = makeHttpApiQuery(UsersApi, {
@@ -35,12 +36,12 @@ export function UserList() {
   const deleteUserMutation = useUsersMutation("users", "deleteUser", () => ({
     runtime,
     onSuccess: () => {
-      console.log("User deleted successfully");
+      Effect.log("User deleted successfully").pipe(Effect.runSync);
       usersQuery.refetch();
       setSelectedUserId(null);
     },
     onError: (error: any) => {
-      console.error("Failed to delete user:", error);
+      Effect.logError("Failed to delete user:", error).pipe(Effect.runSync);
     },
   }));
 

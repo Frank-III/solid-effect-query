@@ -3,6 +3,7 @@ import * as RpcClient from "@effect/rpc/RpcClient"
 import type * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
 import * as Cause from "effect/Cause"
+import * as Console from "effect/Console"
 import type { UseQueryResult, UseMutationResult, SolidQueryOptions, SolidMutationOptions } from "@tanstack/solid-query"
 import { makeUseEffectQuery, makeUseEffectMutation } from "solid-effect-query"
 import type { ManagedRuntime } from "effect"
@@ -57,6 +58,12 @@ export const makeRpcHooks = <
   clientTag: Context.Tag<I, S>,
   useEffectRuntime: () => ManagedRuntime.ManagedRuntime<I, any>
 ) => {
+  // Log initialization in Effect style (will be executed when the hooks are created)
+  Effect.gen(function* () {
+    yield* Effect.log("[RPC makeRpcHooks] Creating hooks")
+    yield* Effect.log(`[RPC makeRpcHooks] clientTag: ${clientTag.key}`)
+  }).pipe(Effect.runSync)
+  
   const useEffectQuery = makeUseEffectQuery(useEffectRuntime as any)
   const useEffectMutation = makeUseEffectMutation(useEffectRuntime as any)
 
@@ -78,9 +85,27 @@ export const makeRpcHooks = <
         ...baseOptions,
         queryKey: [tag, currentPayload] as const,
         queryFn: () =>
-          Effect.flatMap(clientTag, ({ client }) =>
-            client(tag as any, currentPayload)
-          )
+          Effect.gen(function* () {
+            yield* Effect.log(`[RPC Hook] Getting service for ${String(tag)}`)
+            
+            const service = yield* clientTag.pipe(
+              Effect.tap((s) => Effect.log(`[RPC Hook] Service obtained for ${String(tag)}`)),
+              Effect.catchTag("NoSuchElementException", (error) => 
+                Effect.logError(`TasksClient service not found: ${error}`).pipe(
+                  Effect.andThen(Effect.die(`TasksClient service not found`))
+                )
+              )
+            )
+            
+            yield* Effect.log(`[RPC Hook] Calling RPC ${String(tag)}`, { payload: currentPayload })
+            
+            const result = yield* service.client(tag as any, currentPayload).pipe(
+              Effect.tap((res) => Effect.log(`[RPC Hook] ${String(tag)} response received`)),
+              Effect.tapError((err) => Effect.logError(`[RPC Hook] ${String(tag)} error:`, err))
+            )
+            
+            return result
+          })
       }
     })
   }

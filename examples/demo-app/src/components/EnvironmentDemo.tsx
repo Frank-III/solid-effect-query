@@ -1,6 +1,7 @@
 import { createSignal, For, Show } from 'solid-js'
 import { makeEffectRuntime } from 'solid-effect-query'
-import { Effect, Layer, Context } from 'effect'
+import { Layer, Context } from 'effect'
+import * as Effect from 'effect/Effect'
 import { QueryClient } from '@tanstack/solid-query'
 
 // Simple mock service for demo purposes
@@ -54,9 +55,8 @@ const EnvironmentServiceLive = Layer.succeed(
       Array.from(mockConfigs.entries()).map(([key, value]) => ({ key, value }))
     ),
     
-    log: (message: string, level: string) => Effect.sync(() => {
-      console.log(`[${level.toUpperCase()}] ${message}`)
-    })
+    log: (message: string, level: string) => 
+      Effect.log(`[${level.toUpperCase()}] ${message}`)
   }
 )
 

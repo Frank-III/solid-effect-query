@@ -27,6 +27,9 @@ export function makeUseEffectQuery<
   R,
   MR extends ManagedRuntime.ManagedRuntime<R, any>,
 >(useEffectRuntime: () => MR) {
+  // Log factory creation
+  Effect.log("[makeUseEffectQuery] Factory function created").pipe(Effect.runSync)
+  
   return function useEffectQuery<
     TData,
     TError,
@@ -47,7 +50,12 @@ export function makeUseEffectQuery<
       }
     >>,
   ): UseQueryResult<TData, TExposedError> {
+    // Log hook usage
+    Effect.log("[useEffectQuery] Hook called").pipe(Effect.runSync)
+    
     const runtime = useEffectRuntime();
+    Effect.log("[useEffectQuery] Runtime obtained").pipe(Effect.runSync)
+    
     const runPromiseExit = Runtime.runPromiseExit(runtime as any);
 
     const baseResults = createQuery(() => {

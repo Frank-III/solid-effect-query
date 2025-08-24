@@ -3,6 +3,7 @@ import { makeHttpApiQuery, makeHttpApiMutation } from "solid-effect-query-http-a
 import { UsersApi } from "../api/users.api";
 import { useQueryClient } from "@tanstack/solid-query";
 import { ManagedRuntime, Layer } from "effect";
+import * as Effect from "effect/Effect";
 
 // Create the hook factories with the API configuration
 const useUsersQuery = makeHttpApiQuery(UsersApi, {
@@ -39,13 +40,13 @@ export function UserListFactory() {
   const deleteUserMutation = useUsersMutation("users", "deleteUser", () => ({
     runtime,
     onSuccess: () => {
-      console.log("User deleted successfully");
+      Effect.log("User deleted successfully").pipe(Effect.runSync);
       // Invalidate and refetch users list
       queryClient.invalidateQueries({ queryKey: ["users-factory"] });
       setSelectedUserId(null);
     },
     onError: (error) => {
-      console.error("Failed to delete user:", error);
+      Effect.logError("Failed to delete user:", error).pipe(Effect.runSync);
     },
   }));
 

@@ -76,7 +76,7 @@ const TodoListWithFactory: Component = () => {
   
   const createTodo = useRpcMutation("createTodo", () => ({
     onSuccess: (data) => {
-      console.log("Todo created:", data)
+      Effect.log("Todo created:", data).pipe(Effect.runSync)
       todosQuery.refetch()
     }
   }))
@@ -127,7 +127,7 @@ const TodoListDirect: Component = () => {
     runtime.useEffectRuntime,
     () => ({
       onSuccess: (data) => {
-        console.log("Todo created:", data)
+        Effect.log("Todo created:", data).pipe(Effect.runSync)
       }
     })
   )

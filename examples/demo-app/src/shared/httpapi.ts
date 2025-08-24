@@ -4,6 +4,7 @@ import {
   HttpApiGroup,
   HttpApiError,
   HttpApiMiddleware,
+  HttpApiSecurity,
 } from "@effect/platform";
 import { Schema, Context } from "effect";
 
@@ -39,11 +40,14 @@ export class CurrentUser extends Context.Tag("CurrentUser")<
   User
 >() {}
 
-class Authentication extends HttpApiMiddleware.Tag<CurrentUser>()(
-  "CurrentUser",
+export class Authentication extends HttpApiMiddleware.Tag<Authentication>()(
+  "Authentication",
   {
     provides: CurrentUser,
     failure: HttpApiError.Unauthorized,
+    security: {
+      bearer: HttpApiSecurity.bearer
+    }
   },
 ) {}
 
