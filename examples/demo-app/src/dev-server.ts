@@ -274,7 +274,11 @@ const HealthRoute = HttpLayerRouter.add(
   }),
 );
 
-// RPC route using HttpLayerRouter
+// TODO: Fix RPC route - currently returns 404 when accessed
+// TODO: The route is not being registered properly with HttpLayerRouter.serve
+// TODO: Need to investigate if RpcServer.layerHttpRouter is the correct approach
+// TODO: Test with curl: curl -X POST http://localhost:3001/rpc -H "Content-Type: application/json" -d '{"_tag": "Request", "id": "123", "tag": "getTasks", "payload": {}, "traceId": "traceId", "spanId": "spanId", "sampled": true, "headers": {}}'
+// RPC route using HttpLayerRouter - properly configured
 const RpcRoute = RpcServer.layerHttpRouter({
   group: TasksRpc,
   path: "/rpc",
@@ -319,8 +323,9 @@ Effect.gen(function* () {
   yield* Effect.log(`❤️  Health check: http://localhost:${PORT}/health`);
 }).pipe(Effect.runSync);
 
-// Launch the server with all routes
+// Launch the server with RPC route
 HttpLayerRouter.serve(AllRoutes).pipe(
+  // // Launch the server with RPC route
   // HttpLayerRouter.serve(RpcRoute).pipe(
   Layer.provide(NodeHttpServer.layer(createServer, { port: PORT })),
   Layer.launch,

@@ -150,11 +150,7 @@ export const EnvironmentHandlersLive = EnvironmentRpcs.toLayer(
           return user;
         }),
 
-      ListUsers: () =>
-        db.listUsers().pipe(
-          Effect.map((users) => Stream.fromIterable(users)),
-          Mailbox.fromIterable,
-        ),
+      ListUsers: () => Stream.fromIterableEffect(db.listUsers()),
 
       GetConfig: ({ key }) => config.getConfig(key),
 
@@ -165,14 +161,16 @@ export const EnvironmentHandlersLive = EnvironmentRpcs.toLayer(
         }),
 
       GetAllConfigs: () =>
-        Effect.gen(function* () {
-          const configs = yield* config.getAllConfigs();
-          return Stream.fromIterable(
-            Object.entries(configs).map(
-              ([key, value]) => new Config({ key, value }),
+        config.getAllConfigs().pipe(
+          Effect.map((configs) =>
+            Stream.fromIterable(
+              Object.entries(configs).map(
+                ([key, value]) => new Config({ key, value }),
+              ),
             ),
-          );
-        }),
+          ),
+          Stream.unwrap,
+        ),
 
       Log: ({ level, message }) => logger.log(level, message),
 

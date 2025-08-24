@@ -36,7 +36,7 @@ importers:
   examples/demo-app:
     dependencies:
       '@effect/platform':
-        specifier: ^0.90.4
+        specifier: ^0.90.6
         version: 0.90.6(effect@3.17.9)
       '@effect/platform-browser':
         specifier: ^0.70.0
@@ -48,7 +48,7 @@ importers:
         specifier: ^5.0.0
         version: 5.85.5(@tanstack/solid-query@5.85.5(solid-js@1.9.9))(solid-js@1.9.9)
       effect:
-        specifier: ^3.0.0
+        specifier: ^3.17.9
         version: 3.17.9
       solid-effect-query:
         specifier: workspace:*
@@ -107,7 +107,7 @@ importers:
         specifier: ^5.0.0
         version: 5.85.5(solid-js@1.9.9)
       effect:
-        specifier: ^3.0.0
+        specifier: ^3.17.9
         version: 3.17.9
       solid-js:
         specifier: ^1.8.0
@@ -134,7 +134,7 @@ importers:
         specifier: ^5.0.0
         version: 5.85.5(solid-js@1.9.9)
       effect:
-        specifier: ^3.0.0
+        specifier: ^3.17.9
         version: 3.17.9
       solid-effect-query:
         specifier: workspace:*
@@ -152,7 +152,7 @@ importers:
   packages/solid-effect-query-rpc:
     devDependencies:
       effect:
-        specifier: ^3.0.0
+        specifier: ^3.17.9
         version: 3.17.9
       tsdown:
         specifier: ^0.14.1

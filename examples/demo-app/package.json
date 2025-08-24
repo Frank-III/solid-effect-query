@@ -12,11 +12,11 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform": "^0.90.4",
+    "@effect/platform": "^0.90.6",
     "@effect/platform-browser": "^0.70.0",
     "@tanstack/solid-query": "^5.0.0",
     "@tanstack/solid-query-devtools": "^5.0.0",
-    "effect": "^3.0.0",
+    "effect": "^3.17.9",
     "solid-effect-query": "workspace:*",
     "solid-effect-query-http-api": "workspace:*",
     "solid-effect-query-rpc": "workspace:*",

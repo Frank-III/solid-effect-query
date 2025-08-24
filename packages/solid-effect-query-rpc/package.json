@@ -21,7 +21,7 @@
     "effect": "^3.0.0"
   },
   "devDependencies": {
-    "effect": "^3.0.0",
+    "effect": "^3.17.9",
     "tsdown": "^0.14.1",
     "vitest": "^3.2.4"
   }
