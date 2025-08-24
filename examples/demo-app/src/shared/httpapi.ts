@@ -78,8 +78,8 @@ export const TodosApi = HttpApiGroup.make("todos")
       .addSuccess(Schema.Void)
       .setPath(Schema.Struct({ id: Schema.NumberFromString }))
       .addError(HttpApiError.NotFound),
-  )
-  .middlewareEndpoints(Authentication);
+  );
+  // Removed .middlewareEndpoints(Authentication) for simplicity
 
 export const UsersApi = HttpApiGroup.make("users")
   .add(HttpApiEndpoint.get("getCurrentUser", "/users/me").addSuccess(User))
@@ -96,4 +96,7 @@ export const UsersApi = HttpApiGroup.make("users")
   )
   .addError(HttpApiError.Unauthorized);
 
-export const HttpApi = HttpApiBase.make("api").add(TodosApi).add(UsersApi);
+export const HttpApi = HttpApiBase.make("api")
+  .add(TodosApi)
+  .add(UsersApi)
+  .prefix("/api");
