@@ -11,9 +11,9 @@ import * as RpcSerialization from "@effect/rpc/RpcSerialization";
 import { Data, Layer, Ref, Effect, HashMap, Option, Console } from "effect";
 import { createServer } from "node:http";
 
-// Import RPC definitions
+// Import API definitions
 import { TasksRpc, Task } from "./api/tasks.rpc";
-import { HttpApi, Todo, User, CurrentUser } from "./shared/httpapi";
+import { HttpApi, Todo, User, CurrentUser } from "./api/httpapi";
 
 // Port configuration
 const PORT = 3001;
@@ -281,7 +281,7 @@ const HealthRoute = HttpLayerRouter.add(
 // RPC route using HttpLayerRouter - properly configured
 const RpcRoute = RpcServer.layerHttpRouter({
   group: TasksRpc,
-  path: "/rpc",
+  path: "/rpc/tasks",
 }).pipe(
   Layer.provide(TasksHandlers),
   Layer.provide(RpcSerialization.layerJson),
@@ -316,8 +316,8 @@ const AllRoutes = Layer.mergeAll(
 // Start the server
 // ==========================================
 Effect.gen(function* () {
-  yield* Effect.log(`🚀 Starting RPC server on http://localhost:${PORT}`);
-  yield* Effect.log(`📡 RPC endpoint: http://localhost:${PORT}/rpc`);
+  yield* Effect.log(`🚀 Starting server on http://localhost:${PORT}`);
+  yield* Effect.log(`📡 RPC Tasks endpoint: http://localhost:${PORT}/rpc/tasks`);
   yield* Effect.log(`📡 HTTP API endpoint: http://localhost:${PORT}/api`);
   yield* Effect.log(`📡 API docs: http://localhost:${PORT}/api/docs`);
   yield* Effect.log(`❤️  Health check: http://localhost:${PORT}/health`);

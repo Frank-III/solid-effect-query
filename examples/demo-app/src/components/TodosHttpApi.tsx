@@ -1,44 +1,52 @@
-import { For, Show, createSignal } from "solid-js";
-import { makeHttpApiQuery, makeHttpApiMutation } from "solid-effect-query-http-api";
-import { HttpApi, Todo } from "../shared/httpapi";
+import { For, Show, createSignal, onCleanup } from "solid-js";
+import {
+  makeHttpApiHooks,
+} from "solid-effect-query-http-api";
+import { HttpApi, Todo } from "../api/httpapi";
 import { useQueryClient } from "@tanstack/solid-query";
-import { ManagedRuntime, Layer } from "effect";
-
-// Create the hook factories with the API configuration
-const useTodosQuery = makeHttpApiQuery(HttpApi, {
-  baseUrl: "http://localhost:3000/api",
-});
-
-const useTodosMutation = makeHttpApiMutation(HttpApi, {
-  baseUrl: "http://localhost:3000/api",
-});
+import { ManagedRuntime } from "effect";
+import { FetchHttpClient } from "@effect/platform";
 
 export function TodosHttpApi() {
   const [newTodoTitle, setNewTodoTitle] = createSignal("");
   const [selectedTodoId, setSelectedTodoId] = createSignal<number | null>(null);
   const queryClient = useQueryClient();
-  
-  // Create a runtime for the HTTP API calls
-  const runtime = ManagedRuntime.make(Layer.empty);
+
+  // Create a runtime with the FetchHttpClient layer for browser environments
+  const runtime = ManagedRuntime.make(FetchHttpClient.layer);
+  onCleanup(() => {
+    runtime.dispose();
+  });
+
+  // Create the HTTP API hook set with shared runtime (v2 factory)
+  const { useQuery: useHttpQuery, useMutation: useHttpMutation } = makeHttpApiHooks(HttpApi, {
+    baseUrl: "http://localhost:3001",
+    runtime,
+  });
 
   // Query all todos
-  const todosQuery = useTodosQuery("todos", "getAllTodos", () => ({
+  const todosQuery = useHttpQuery("todos", "getAllTodos", () => ({
     staleTime: 30000,
-    runtime,
+    onError: (error) => {
+      console.error("[TodosHttpApi] getAllTodos error:", error);
+    },
   }));
 
   // Query selected todo
-  const todoQuery = useTodosQuery("todos", "getTodo", () => ({
+  const todoQuery = useHttpQuery("todos", "getTodo", () => ({
     path: { id: selectedTodoId()! },
     enabled: selectedTodoId() !== null,
-    runtime,
+    onError: (error) => {
+      console.error("[TodosHttpApi] getTodo error:", error);
+    },
   }));
 
   // Create todo mutation
-  const createTodoMutation = useTodosMutation("todos", "createTodo", () => ({
-    runtime,
+  const createTodoMutation = useHttpMutation("todos", "createTodo", () => ({
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["httpApi", "todos", "getAllTodos"] });
+      queryClient.invalidateQueries({
+        queryKey: ["httpApi", "todos", "getAllTodos"],
+      });
       setNewTodoTitle("");
     },
     onError: (error) => {
@@ -47,18 +55,18 @@ export function TodosHttpApi() {
   }));
 
   // Update todo mutation
-  const updateTodoMutation = useTodosMutation("todos", "updateTodo", () => ({
-    runtime,
+  const updateTodoMutation = useHttpMutation("todos", "updateTodo", () => ({
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["httpApi", "todos"] });
     },
   }));
 
   // Delete todo mutation
-  const deleteTodoMutation = useTodosMutation("todos", "deleteTodo", () => ({
-    runtime,
+  const deleteTodoMutation = useHttpMutation("todos", "deleteTodo", () => ({
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["httpApi", "todos", "getAllTodos"] });
+      queryClient.invalidateQueries({
+        queryKey: ["httpApi", "todos", "getAllTodos"],
+      });
       setSelectedTodoId(null);
     },
   }));
@@ -225,8 +233,8 @@ export function TodosHttpApi() {
                       {updateTodoMutation.isPending
                         ? "Updating..."
                         : todo().completed
-                        ? "Mark as Pending"
-                        : "Mark as Complete"}
+                          ? "Mark as Pending"
+                          : "Mark as Complete"}
                     </button>
                     <button
                       onClick={() =>

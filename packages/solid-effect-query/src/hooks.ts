@@ -8,13 +8,13 @@ import type {
   SolidQueryOptions,
   UseQueryResult,
 } from "@tanstack/solid-query";
-import { skipToken, createMutation, createQuery } from "@tanstack/solid-query";
+import { skipToken, useMutation as createMutation, useQuery as createQuery } from "@tanstack/solid-query";
 import type { ManagedRuntime } from "effect";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Either from "effect/Either";
 import * as Exit from "effect/Exit";
-import * as Runtime from "effect/Runtime";
+
 import type { Accessor } from "solid-js";
 
 type Override<TTargetA, TTargetB> = {
@@ -27,9 +27,6 @@ export function makeUseEffectQuery<
   R,
   MR extends ManagedRuntime.ManagedRuntime<R, any>,
 >(useEffectRuntime: () => MR) {
-  // Log factory creation
-  Effect.log("[makeUseEffectQuery] Factory function created").pipe(Effect.runSync)
-  
   return function useEffectQuery<
     TData,
     TError,
@@ -50,13 +47,9 @@ export function makeUseEffectQuery<
       }
     >>,
   ): UseQueryResult<TData, TExposedError> {
-    // Log hook usage
-    Effect.log("[useEffectQuery] Hook called").pipe(Effect.runSync)
-    
     const runtime = useEffectRuntime();
-    Effect.log("[useEffectQuery] Runtime obtained").pipe(Effect.runSync)
-    
-    const runPromiseExit = Runtime.runPromiseExit(runtime as any);
+    // Use the ManagedRuntime's own runPromiseExit method directly
+    const runPromiseExit = runtime.runPromiseExit.bind(runtime);
 
     const baseResults = createQuery(() => {
       const opts = options() as any;
@@ -81,15 +74,7 @@ export function makeUseEffectQuery<
             return skipToken as any;
           }
 
-          const effectToRun = queryEffect.pipe(
-            Effect.withSpan("useEffectQuery", {
-              attributes: {
-                queryKey: args.queryKey,
-                queryFn: queryFn.toString(),
-              },
-            }),
-          );
-          const result = await runPromiseExit(effectToRun, {
+          const result = await runPromiseExit(queryEffect, {
             signal: args.signal,
           });
           if (Exit.isFailure(result)) {
@@ -253,8 +238,9 @@ export function makeUseEffectMutation<
     }
   > {
     const runtime = useEffectRuntime();
-    const runPromiseExit = Runtime.runPromiseExit(runtime as any);
-    const runPromise = Runtime.runPromise(runtime as any);
+    // Use the ManagedRuntime's own methods directly
+    const runPromiseExit = runtime.runPromiseExit.bind(runtime);
+    const runPromise = runtime.runPromise.bind(runtime);
 
     const baseResults = createMutation(() => {
       const opts = options() as any;
@@ -278,14 +264,7 @@ export function makeUseEffectMutation<
           } catch (e) {
             throw new Cause.UnknownException(e, "mutationFn threw");
           }
-          const effectToRun = mutationEffect.pipe(
-            Effect.withSpan("useEffectMutation", {
-              attributes: {
-                mutationFn: mutationFn.toString(),
-              },
-            }),
-          );
-          const result = await runPromiseExit(effectToRun);
+          const result = await runPromiseExit(mutationEffect);
           if (Exit.isFailure(result)) {
             throw result.cause;
           } else {

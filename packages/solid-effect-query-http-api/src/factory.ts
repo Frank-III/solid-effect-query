@@ -17,6 +17,7 @@ import type {
   SolidMutationOptions,
 } from "@tanstack/solid-query";
 import { Effect, ManagedRuntime } from "effect";
+import * as Exit from "effect/Exit";
 import type { ParseResult, Stream } from "effect";
 import * as Cause from "effect/Cause";
 import type { Simplify } from "effect/Types";
@@ -169,21 +170,24 @@ export const makeHttpApiQuery = <
       return {
         ...queryOpts, // Spread the solid-query options
         queryKey,
-        queryFn: () =>
-          runtime.runPromise(
-            Effect.gen(function* () {
-              const client = yield* clientEffect;
-              const clientGroup = (client as any)[group];
-              const clientEndpoint = clientGroup[endpoint];
+        queryFn: (ctx: any) =>
+          runtime
+            .runPromiseExit(
+              Effect.gen(function* () {
+                const client = yield* clientEffect;
+                const clientGroup = (client as any)[group];
+                const clientEndpoint = clientGroup[endpoint];
 
-              return yield* clientEndpoint({
-                path,
-                urlParams,
-                payload,
-                headers,
-              });
-            }).pipe(Effect.scoped) as Effect.Effect<any, unknown, never>
-          ),
+                return yield* clientEndpoint({
+                  path,
+                  urlParams,
+                  payload,
+                  headers,
+                });
+              }).pipe(Effect.scoped) as Effect.Effect<any, unknown, never>,
+              { signal: ctx?.signal }
+            )
+            .then((res) => (Exit.isFailure(res) ? Promise.reject(res.cause) : res.value)),
       };
     });
 
@@ -325,20 +329,22 @@ export const makeHttpApiMutation = <
       return {
         ...mutationOpts, // Spread the solid-query options
         mutationFn: (variables: any) =>
-          runtime.runPromise(
-            Effect.gen(function* () {
-              const client = yield* clientEffect;
-              const clientGroup = (client as any)[group];
-              const clientEndpoint = clientGroup[endpoint];
+          runtime
+            .runPromiseExit(
+              Effect.gen(function* () {
+                const client = yield* clientEffect;
+                const clientGroup = (client as any)[group];
+                const clientEndpoint = clientGroup[endpoint];
 
-              return yield* clientEndpoint({
-                path: variables.path,
-                urlParams: variables.urlParams,
-                payload: variables.payload,
-                headers: variables.headers,
-              });
-            }).pipe(Effect.scoped) as Effect.Effect<any, unknown, never>
-          ),
+                return yield* clientEndpoint({
+                  path: variables.path,
+                  urlParams: variables.urlParams,
+                  payload: variables.payload,
+                  headers: variables.headers,
+                });
+              }).pipe(Effect.scoped) as Effect.Effect<any, unknown, never>
+            )
+            .then((res) => (Exit.isFailure(res) ? Promise.reject(res.cause) : res.value)),
       };
     });
 

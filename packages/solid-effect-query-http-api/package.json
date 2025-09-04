@@ -1,6 +1,15 @@
 {
   "name": "solid-effect-query-http-api",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "Effect Platform HTTP API integration for solid-effect-query",
+  "keywords": ["solid", "effect", "http", "api", "tanstack-query"],
+  "homepage": "https://github.com/yourusername/solid-effect-query#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourusername/solid-effect-query.git"
+  },
+  "license": "MIT",
+  "author": "Your Name",
   "type": "module",
   "exports": {
     ".": {

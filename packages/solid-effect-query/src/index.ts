@@ -1,6 +1,9 @@
-// Export hooks and runtime functions
-export * from './hooks'
-export * from './index.layer'
+// Export the main entry points for the library
+export * from "./index.layer";
+export * from "./hooks";
 
-// Re-export commonly used Effect types
-export { Effect, Cause, Exit, Runtime, Layer, ManagedRuntime } from 'effect'
+// Export type utilities if they exist
+// export type { Simplify } from "./types";
+
+// Re-export useful Effect types for convenience
+export type { Layer, ManagedRuntime, Runtime, Effect } from "effect";

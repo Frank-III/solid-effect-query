@@ -1,6 +1,15 @@
 {
   "name": "solid-effect-query",
-  "version": "0.0.1",
+  "version": "0.1.0",
+  "description": "Effect integration for TanStack Query in SolidJS applications",
+  "keywords": ["solid", "effect", "tanstack-query", "solid-query", "functional"],
+  "homepage": "https://github.com/yourusername/solid-effect-query#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yourusername/solid-effect-query.git"
+  },
+  "license": "MIT",
+  "author": "Your Name",
   "type": "module",
   "exports": {
     ".": {

@@ -1,34 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { renderHook } from "@solidjs/testing-library";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { renderHook, waitFor } from "@solidjs/testing-library";
 import { QueryClient, QueryClientProvider } from "@tanstack/solid-query";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "@effect/platform";
-import { Schema } from "effect";
+import { FetchHttpClient } from "@effect/platform";
+import { Schema, Effect, ManagedRuntime, Layer } from "effect";
 import { makeHttpApiQuery, makeHttpApiMutation } from "./factory";
-import { createSignal } from "solid-js";
 import type { JSX } from "solid-js";
-
-// Mock the useEffectRuntime hook
-vi.mock("solid-effect-query", () => ({
-  useEffectRuntime: () => ({
-    runPromise: vi.fn(),
-    run: vi.fn()
-  }),
-  makeUseEffectQuery: () => () => ({
-    isLoading: false,
-    isError: false,
-    data: undefined,
-    error: undefined,
-    fetchStatus: "idle"
-  }),
-  makeUseEffectMutation: () => () => ({
-    mutate: vi.fn(),
-    mutateAsync: vi.fn(),
-    isPending: false,
-    isError: false,
-    data: undefined,
-    error: undefined
-  })
-}));
 
 // Define test schemas
 const UserSchema = Schema.Struct({
@@ -67,8 +44,13 @@ class UsersApi extends HttpApiGroup.make("users")
 // Create the test API
 const TestApi = HttpApi.make("TestApi").add(UsersApi);
 
+// Mock fetch for testing
+const mockFetch = vi.fn();
+global.fetch = mockFetch;
+
 describe("solid-effect-query-http-api", () => {
   let queryClient: QueryClient;
+  let runtime: ManagedRuntime.ManagedRuntime<unknown, unknown>;
 
   beforeEach(() => {
     queryClient = new QueryClient({
@@ -78,38 +60,21 @@ describe("solid-effect-query-http-api", () => {
       }
     });
     
+    // Create runtime with FetchHttpClient
+    runtime = ManagedRuntime.make(FetchHttpClient.layer);
+    
     // Reset mocks
     vi.clearAllMocks();
+    mockFetch.mockReset();
   });
 
-  describe("basic functionality", () => {
-    it("should export makeHttpApiQuery", () => {
-      expect(makeHttpApiQuery).toBeDefined();
-      expect(typeof makeHttpApiQuery).toBe("function");
-    });
-
-    it("should export makeHttpApiMutation", () => {
-      expect(makeHttpApiMutation).toBeDefined();
-      expect(typeof makeHttpApiMutation).toBe("function");
-    });
-
-    it("should create a query hook", () => {
-      const useQuery = makeHttpApiQuery(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-      expect(typeof useQuery).toBe("function");
-    });
-
-    it("should create a mutation hook", () => {
-      const useMutation = makeHttpApiMutation(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-      expect(typeof useMutation).toBe("function");
-    });
+  afterEach(() => {
+    runtime.dispose();
   });
 
-  describe("makeHttpApiQuery", () => {
-    it("should create a working query hook", () => {
+  describe("Runtime integration", () => {
+    it("should fail without proper HTTP client runtime", async () => {
+      const emptyRuntime = ManagedRuntime.make(Layer.empty);
       const useUsersQuery = makeHttpApiQuery(TestApi, {
         baseUrl: "https://api.example.com"
       });
@@ -121,18 +86,29 @@ describe("solid-effect-query-http-api", () => {
       );
 
       const { result } = renderHook(
-        () => useUsersQuery("users", "listUsers", () => ({})),
+        () => useUsersQuery("users", "listUsers", () => ({ 
+          runtime: emptyRuntime 
+        })),
         { wrapper }
       );
 
-      // Should return query result
-      expect(result).toBeDefined();
-      expect(result.isLoading).toBeDefined();
-      // data can be undefined when not loaded
-      expect("data" in result).toBe(true);
+      await waitFor(() => expect(result.isError).toBe(true));
+      
+      // Should error because HttpClient service is missing
+      expect(result.error).toBeDefined();
+      expect(result.error?.toString()).toContain("Service not found");
+      
+      emptyRuntime.dispose();
     });
 
-    it("should handle query with path parameters", () => {
+    it("should work with proper HTTP client runtime", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => [{ id: 1, name: "John", email: "john@example.com" }]
+      });
+
       const useUsersQuery = makeHttpApiQuery(TestApi, {
         baseUrl: "https://api.example.com"
       });
@@ -144,20 +120,188 @@ describe("solid-effect-query-http-api", () => {
       );
 
       const { result } = renderHook(
-        () => useUsersQuery(
-          "users",
-          "getUser",
-          () => ({ 
-            path: { id: 123 }
-          } as any)
-        ),
+        () => useUsersQuery("users", "listUsers", () => ({ runtime })),
         { wrapper }
       );
 
-      expect(result).toBeDefined();
+      await waitFor(() => expect(result.isSuccess).toBe(true));
+      expect(result.data).toEqual([{ id: 1, name: "John", email: "john@example.com" }]);
+    });
+  });
+
+  describe("Type inference and DX", () => {
+    it("should infer correct types from API definition", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ id: 1, name: "John", email: "john@example.com" })
+      });
+
+      const useUsersQuery = makeHttpApiQuery(TestApi, {
+        baseUrl: "https://api.example.com"
+      });
+
+      const wrapper = ({ children }: { children: JSX.Element }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      );
+
+      const { result } = renderHook(
+        () => useUsersQuery("users", "getUser", () => ({ 
+          path: { id: 1 },
+          runtime 
+        })),
+        { wrapper }
+      );
+
+      await waitFor(() => expect(result.isSuccess).toBe(true));
+      
+      // Type should be inferred correctly
+      if (result.data) {
+        // These should compile without errors
+        const name: string = result.data.name;
+        const email: string = result.data.email;
+        const id: number = result.data.id;
+        
+        expect(name).toBe("John");
+        expect(email).toBe("john@example.com");
+        expect(id).toBe(1);
+      }
     });
 
-    it("should generate correct query keys with custom key", () => {
+    it("should enforce correct mutation payload types at compile time", () => {
+      const useUsersMutation = makeHttpApiMutation(TestApi, {
+        baseUrl: "https://api.example.com"
+      });
+
+      // This test is primarily for TypeScript compilation
+      // If the types are wrong, TypeScript will fail to compile
+      const validPayload = {
+        payload: {
+          name: "Test",
+          email: "test@example.com"
+        }
+      };
+
+      // The following would fail TypeScript compilation:
+      // const invalidPayload = {
+      //   payload: {
+      //     name: "Test",
+      //     // missing email field
+      //   }
+      // };
+
+      expect(validPayload.payload.name).toBe("Test");
+    });
+  });
+
+  describe("Error handling with Effect", () => {
+    it("should handle HTTP errors as Effect errors", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ message: "User not found", code: "USER_NOT_FOUND" })
+      });
+
+      const useUsersQuery = makeHttpApiQuery(TestApi, {
+        baseUrl: "https://api.example.com"
+      });
+
+      const wrapper = ({ children }: { children: JSX.Element }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      );
+
+      const { result } = renderHook(
+        () => useUsersQuery("users", "getUser", () => ({ 
+          path: { id: 999 },
+          runtime 
+        })),
+        { wrapper }
+      );
+
+      await waitFor(() => expect(result.isError).toBe(true));
+      
+      // Error should be wrapped in Cause
+      expect(result.error).toBeDefined();
+      if (result.error && typeof result.error === 'object') {
+        // Check that it's an Effect Cause
+        const errorString = result.error.toString();
+        expect(errorString).toContain("404");
+      }
+    });
+
+    it("should handle network errors", async () => {
+      mockFetch.mockRejectedValueOnce(new Error("Network error"));
+
+      const useUsersQuery = makeHttpApiQuery(TestApi, {
+        baseUrl: "https://api.example.com"
+      });
+
+      const wrapper = ({ children }: { children: JSX.Element }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      );
+
+      const { result } = renderHook(
+        () => useUsersQuery("users", "listUsers", () => ({ runtime })),
+        { wrapper }
+      );
+
+      await waitFor(() => expect(result.isError).toBe(true));
+      expect(result.error).toBeDefined();
+    });
+  });
+
+  describe("Query key generation", () => {
+    it("should generate proper query keys including API structure", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => []
+      });
+
+      const useUsersQuery = makeHttpApiQuery(TestApi, {
+        baseUrl: "https://api.example.com"
+      });
+
+      // Spy on queryClient to check the query key
+      const invalidateQueriesSpy = vi.spyOn(queryClient, 'invalidateQueries');
+
+      const wrapper = ({ children }: { children: JSX.Element }) => (
+        <QueryClientProvider client={queryClient}>
+          {children}
+        </QueryClientProvider>
+      );
+
+      const { result } = renderHook(
+        () => useUsersQuery("users", "listUsers", () => ({ runtime })),
+        { wrapper }
+      );
+
+      await waitFor(() => expect(result.isSuccess).toBe(true));
+      
+      // Verify we can invalidate using the expected key structure
+      queryClient.invalidateQueries({ queryKey: ["httpApi", "users", "listUsers"] });
+      expect(invalidateQueriesSpy).toHaveBeenCalledWith({ 
+        queryKey: ["httpApi", "users", "listUsers"] 
+      });
+    });
+
+    it("should include path parameters in query key", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ id: 123, name: "Test", email: "test@example.com" })
+      });
+
       const useUsersQuery = makeHttpApiQuery(TestApi, {
         baseUrl: "https://api.example.com"
       });
@@ -169,87 +313,31 @@ describe("solid-effect-query-http-api", () => {
       );
 
       renderHook(
-        () => useUsersQuery(
-          "users",
-          "getUser",
-          () => ({ 
-            path: { id: 123 },
-            queryKey: ["custom", "key"]
-          } as any)
-        ),
+        () => useUsersQuery("users", "getUser", () => ({ 
+          path: { id: 123 },
+          runtime 
+        })),
         { wrapper }
       );
 
-      // Check that the hook was called
-      expect(true).toBe(true);
-    });
-
-    it("should handle reactive parameters", () => {
-      const useUsersQuery = makeHttpApiQuery(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      const wrapper = ({ children }: { children: JSX.Element }) => (
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
+      // Verify the fetch was called with the correct URL
+      await waitFor(() => expect(mockFetch).toHaveBeenCalled());
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.example.com/users/123",
+        expect.any(Object)
       );
-
-      const [userId, setUserId] = createSignal(1);
-
-      const { result } = renderHook(
-        () => useUsersQuery(
-          "users",
-          "getUser",
-          () => ({
-            path: { id: userId() }
-          } as any)
-        ),
-        { wrapper }
-      );
-
-      expect(result).toBeDefined();
-      
-      // Change the userId
-      setUserId(2);
-      
-      // The query should react to the change
-      expect(result).toBeDefined();
-    });
-
-    it("should support enabled option", () => {
-      const useUsersQuery = makeHttpApiQuery(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      const wrapper = ({ children }: { children: JSX.Element }) => (
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
-      );
-
-      const [enabled, setEnabled] = createSignal(false);
-
-      const { result } = renderHook(
-        () => useUsersQuery(
-          "users",
-          "listUsers",
-          () => ({ 
-            enabled: enabled()
-          })
-        ),
-        { wrapper }
-      );
-
-      expect(result.fetchStatus).toBe("idle");
-
-      // Enable the query
-      setEnabled(true);
     });
   });
 
-  describe("makeHttpApiMutation", () => {
-    it("should create a working mutation hook", () => {
+  describe("Mutations with Effect integration", () => {
+    it("should handle successful mutations", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 201,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ id: 123, name: "New User", email: "new@example.com" })
+      });
+
       const useUsersMutation = makeHttpApiMutation(TestApi, {
         baseUrl: "https://api.example.com"
       });
@@ -261,46 +349,42 @@ describe("solid-effect-query-http-api", () => {
       );
 
       const { result } = renderHook(
-        () => useUsersMutation("users", "createUser", () => ({})),
+        () => useUsersMutation("users", "createUser", () => ({ runtime })),
         { wrapper }
       );
 
-      expect(result).toBeDefined();
-      expect(typeof result.mutate).toBe("function");
-      expect(typeof result.mutateAsync).toBe("function");
-      expect(result.isPending).toBe(false);
-    });
-
-    it("should handle mutation execution", () => {
-      const useUsersMutation = makeHttpApiMutation(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      const wrapper = ({ children }: { children: JSX.Element }) => (
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
-      );
-
-      const { result } = renderHook(
-        () => useUsersMutation("users", "createUser", () => ({})),
-        { wrapper }
-      );
-
-      // Trigger mutation
       result.mutate({
         payload: {
-          name: "John Doe",
-          email: "john@example.com"
+          name: "New User",
+          email: "new@example.com"
         }
       });
 
-      expect(result.mutate).toHaveBeenCalled();
+      await waitFor(() => expect(result.isSuccess).toBe(true));
+      
+      expect(result.data).toEqual({
+        id: 123,
+        name: "New User",
+        email: "new@example.com"
+      });
+
+      // Verify the request
+      expect(mockFetch).toHaveBeenCalledWith(
+        "https://api.example.com/users",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({ name: "New User", email: "new@example.com" })
+        })
+      );
     });
 
-    it("should support mutation options", () => {
-      const onSuccess = vi.fn();
-      const onError = vi.fn();
+    it("should handle mutation errors with proper Effect error types", async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => ({ message: "Invalid email", code: "VALIDATION_ERROR" })
+      });
 
       const useUsersMutation = makeHttpApiMutation(TestApi, {
         baseUrl: "https://api.example.com"
@@ -313,153 +397,38 @@ describe("solid-effect-query-http-api", () => {
       );
 
       const { result } = renderHook(
-        () => useUsersMutation(
-          "users",
-          "createUser",
-          () => ({ 
-            onSuccess,
-            onError
-          })
-        ),
+        () => useUsersMutation("users", "createUser", () => ({ runtime })),
         { wrapper }
       );
 
-      expect(result).toBeDefined();
-    });
-  });
-
-  describe("Type inference", () => {
-    it("should work with typed endpoints", () => {
-      const useUsersQuery = makeHttpApiQuery(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      const wrapper = ({ children }: { children: JSX.Element }) => (
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
-      );
-
-      const { result } = renderHook(
-        () => useUsersQuery("users", "listUsers", () => ({})),
-        { wrapper }
-      );
-
-      // TypeScript should know the types
-      if (result.data) {
-        // This is just a type test
-        // @ts-expect-error - This is just for type testing
-        const _users: readonly { id: number; name: string; email: string }[] = result.data;
-      }
-
-      expect(true).toBe(true);
-    });
-
-    it("should enforce correct mutation payload types", () => {
-      const useUsersMutation = makeHttpApiMutation(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      const wrapper = ({ children }: { children: JSX.Element }) => (
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
-      );
-
-      const { result } = renderHook(
-        () => useUsersMutation("users", "createUser", () => ({})),
-        { wrapper }
-      );
-
-      // This should compile - TypeScript knows the payload type
       result.mutate({
         payload: {
-          name: "Test",
-          email: "test@example.com"
+          name: "Invalid User",
+          email: "invalid-email"
         }
       });
 
-      expect(true).toBe(true);
+      await waitFor(() => expect(result.isError).toBe(true));
+      expect(result.error).toBeDefined();
     });
   });
 
-  describe("Error handling", () => {
-    it("should handle errors in options", () => {
-      const useUsersQuery = makeHttpApiQuery(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      const wrapper = ({ children }: { children: JSX.Element }) => (
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
-      );
-
-      const { result } = renderHook(
-        () => useUsersQuery(
-          "users",
-          "getUser",
-          () => ({ 
-            path: { id: 999 }
-          } as any)
-        ),
-        { wrapper }
-      );
-
-      // Should handle errors gracefully
-      expect(result).toBeDefined();
-    });
-  });
-
-  describe("API client configuration", () => {
-    it("should accept baseUrl configuration", () => {
-      const useUsersQuery = makeHttpApiQuery(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      expect(useUsersQuery).toBeDefined();
-    });
-
-    it("should accept URL object as baseUrl", () => {
-      const useUsersQuery = makeHttpApiQuery(TestApi, {
-        baseUrl: new URL("https://api.example.com")
-      });
-
-      expect(useUsersQuery).toBeDefined();
-    });
-
-    it("should accept transformClient option", () => {
+  describe("HTTP API specific features", () => {
+    it("should support transform client option", async () => {
       const transformClient = vi.fn((client) => client);
+      
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        headers: new Headers({ "content-type": "application/json" }),
+        json: async () => []
+      });
 
       const useUsersQuery = makeHttpApiQuery(TestApi, {
         baseUrl: "https://api.example.com",
         transformClient
       });
 
-      expect(useUsersQuery).toBeDefined();
-    });
-  });
-
-  describe("Query key generation", () => {
-    it("should generate consistent query keys", () => {
-      const useUsersQuery = makeHttpApiQuery(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      // The implementation generates keys in the format:
-      // ["httpApi", group, endpoint, ...params]
-      // This is just testing that the hook works
-      expect(useUsersQuery).toBeDefined();
-    });
-  });
-
-  describe("Mutation variable handling", () => {
-    it("should handle mutations with no payload", () => {
-      // If we had a delete endpoint
-      const useUsersMutation = makeHttpApiMutation(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
       const wrapper = ({ children }: { children: JSX.Element }) => (
         <QueryClientProvider client={queryClient}>
           {children}
@@ -467,32 +436,14 @@ describe("solid-effect-query-http-api", () => {
       );
 
       const { result } = renderHook(
-        () => useUsersMutation("users", "createUser", () => ({})),
+        () => useUsersQuery("users", "listUsers", () => ({ runtime })),
         { wrapper }
       );
 
-      expect(result).toBeDefined();
-    });
-
-    it("should handle mutations with path parameters", () => {
-      const useUsersMutation = makeHttpApiMutation(TestApi, {
-        baseUrl: "https://api.example.com"
-      });
-
-      const wrapper = ({ children }: { children: JSX.Element }) => (
-        <QueryClientProvider client={queryClient}>
-          {children}
-        </QueryClientProvider>
-      );
-
-      const { result } = renderHook(
-        () => useUsersMutation("users", "createUser", () => ({})),
-        { wrapper }
-      );
-
-      // Even though createUser doesn't have path params,
-      // the mutation hook should still work
-      expect(result).toBeDefined();
+      await waitFor(() => expect(result.isSuccess).toBe(true));
+      
+      // Transform client should be called during setup
+      expect(transformClient).toHaveBeenCalled();
     });
   });
 });

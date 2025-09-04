@@ -1,0 +1,8 @@
+{
+  "src/dev-server.ts": {
+    "file": "index.mjs",
+    "name": "dev-server",
+    "src": "src/dev-server.ts",
+    "isEntry": true
+  }
+}
