@@ -1,167 +1,237 @@
-# SolidJS Effect Query
+# Solid Effect Query
 
-A collection of packages for integrating Effect-TS with TanStack Query in SolidJS applications.
+A powerful integration of [Effect](https://effect.website/) with [TanStack Query](https://tanstack.com/query) for [SolidJS](https://www.solidjs.com/) applications, bringing functional programming patterns and type-safe error handling to your data fetching layer.
 
-## Packages
+## 📦 Packages
 
-- **`solid-effect-query`** - Core hooks for Effect + TanStack Query integration
-- **`solid-effect-query-http-api`** - HttpApi integration for Effect Platform
-- **`solid-effect-query-rpc`** - RPC integration for Effect RPC
+This monorepo contains three packages that work together to provide a complete Effect + TanStack Query solution for SolidJS:
 
-## Installation
+| Package | Description | Version |
+|---------|-------------|---------|
+| [solid-effect-query](./packages/solid-effect-query) | Core Effect integration with TanStack Query | 0.1.0 |
+| [solid-effect-query-http-api](./packages/solid-effect-query-http-api) | Effect Platform HTTP API integration | 0.1.0 |
+| [solid-effect-query-rpc](./packages/solid-effect-query-rpc) | Effect RPC client integration | 0.1.0 |
+
+## 🚀 Quick Start
+
+### Installation
 
 ```bash
-pnpm add solid-effect-query @tanstack/solid-query effect
-# For HttpApi support
-pnpm add solid-effect-query-http-api @effect/platform
-# For RPC support  
-pnpm add solid-effect-query-rpc @effect/rpc @effect/rpc-http
+# Core package
+npm install solid-effect-query @tanstack/solid-query effect
+
+# For HTTP API support
+npm install solid-effect-query-http-api @effect/platform
+
+# For RPC support
+npm install solid-effect-query-rpc @effect/rpc @effect/rpc-http
 ```
 
-## Quick Start
-
-### Core Usage
+### Basic Usage
 
 ```tsx
-import { createEffectQuery, EffectRuntimeProvider } from 'solid-effect-query'
-import { QueryClient, QueryClientProvider } from '@tanstack/solid-query'
-import * as Effect from 'effect'
+import { makeEffectRuntime } from "solid-effect-query";
+import { Effect, Layer } from "effect";
+import { createSignal, Show } from "solid-js";
 
-const queryClient = new QueryClient()
-
-// Define your Effect
-const fetchUser = (id: string) => 
-  Effect.gen(function* () {
-    // Your Effect logic here
-    return { id, name: 'John Doe' }
-  })
-
-function UserProfile() {
-  const [userId] = createSignal('1')
-  
-  const query = createEffectQuery(() => ({
-    queryKey: ['user', userId()],
-    queryFn: () => fetchUser(userId()),
-    enabled: userId().length > 0
-  }))
-  
-  return (
-    <Show when={query.data}>
-      <div>{query.data.name}</div>
-    </Show>
-  )
-}
+// Create a runtime with your services
+const { Provider, useEffectQuery, useEffectMutation } = makeEffectRuntime(() => 
+  Layer.empty // Add your services here
+);
 
 function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <EffectRuntimeProvider runtime={runtime}>
-        <UserProfile />
-      </EffectRuntimeProvider>
-    </QueryClientProvider>
-  )
+    <Provider>
+      <TodoList />
+    </Provider>
+  );
+}
+
+function TodoList() {
+  const query = useEffectQuery(() => ({
+    queryKey: ["todos"],
+    queryFn: () => 
+      Effect.gen(function* () {
+        const response = yield* Effect.tryPromise({
+          try: () => fetch("/api/todos").then(r => r.json()),
+          catch: (error) => new Error(`Failed to fetch: ${error}`)
+        });
+        return response;
+      })
+  }));
+
+  return (
+    <div>
+      <Show when={query.isPending}>
+        <div>Loading...</div>
+      </Show>
+      <Show when={query.isError}>
+        <div>Error: {query.error?.message}</div>
+      </Show>
+      <Show when={query.isSuccess}>
+        <ul>
+          {query.data.map(todo => (
+            <li>{todo.title}</li>
+          ))}
+        </ul>
+      </Show>
+    </div>
+  );
 }
 ```
 
-### HttpApi Usage
+## ✨ Features
+
+- 🎯 **Type-safe error handling** - Leverage Effect's powerful error management system
+- 🔄 **Runtime management** - Manage Effect services and dependencies with SolidJS context
+- 🌐 **HTTP API integration** - Type-safe API clients with schema validation
+- 📡 **RPC support** - Seamless client-server communication with automatic batching
+- 💪 **Full TanStack Query features** - Caching, mutations, optimistic updates, infinite queries, and more
+- 🔒 **Compile-time safety** - Catch errors at build time, not runtime
+- ⚡ **SolidJS reactive** - Built specifically for SolidJS's fine-grained reactivity
+
+## 📚 Examples
+
+### With Services and Dependencies
 
 ```tsx
-import { HttpApi, HttpApiGroup, HttpApiEndpoint } from '@effect/platform'
-import { createHttpApiClient, createHttpApiQuery } from 'solid-effect-query-http-api'
+import { Context, Layer, Effect } from "effect";
+import { makeEffectRuntime } from "solid-effect-query";
 
-// Define your API
-class UsersApi extends HttpApi.make("users")
-  .add(
-    HttpApiGroup.make("users")
-      .add(HttpApiEndpoint.get("getUser", "/users/:id"))
-  ) {}
+// Define a service
+class LoggerService extends Context.Tag("Logger")<
+  LoggerService,
+  { log: (message: string) => Effect.Effect<void> }
+>() {}
 
-// Create client
-const client = createHttpApiClient(UsersApi, {
-  baseUrl: 'https://api.example.com',
-  runtime
-})
+// Create layer
+const LoggerLive = Layer.succeed(
+  LoggerService,
+  { log: (message) => Effect.log(message) }
+);
 
-// Use in component
-function User() {
-  const [userId] = createSignal('1')
-  
-  const query = createHttpApiQuery(
-    client.users.getUser,
-    () => ({
-      queryKey: ['user', userId()],
-      args: [{ params: { id: userId() } }]
-    })
-  )
-  
-  return <div>{query.data?.name}</div>
+// Create runtime with the service
+const { Provider, useEffectQuery } = makeEffectRuntime(() => LoggerLive);
+
+function DataComponent() {
+  const query = useEffectQuery(() => ({
+    queryKey: ["data-with-logging"],
+    queryFn: () =>
+      Effect.gen(function* () {
+        const logger = yield* LoggerService;
+        yield* logger.log("Fetching data...");
+        const data = yield* fetchData();
+        yield* logger.log("Data fetched successfully");
+        return data;
+      })
+  }));
+
+  return <div>{/* render data */}</div>;
 }
 ```
 
-### RPC Usage
+### HTTP API Client
 
 ```tsx
-import * as Rpc from '@effect/rpc/Rpc'
-import * as RpcGroup from '@effect/rpc/RpcGroup'
-import { createRpcClient, createRpcQuery } from 'solid-effect-query-rpc'
+import { makeHttpApiQuery } from "solid-effect-query-http-api";
+import { Schema } from "effect";
+import * as HttpApi from "@effect/platform/HttpApi";
 
-// Define RPC
-class MyRpc extends RpcGroup.make(
-  Rpc.make("getUser")
-    .payload(Schema.Struct({ id: Schema.String }))
-    .success(UserSchema)
+// Define your API schema
+class TodosApi extends HttpApi.make("todos").pipe(
+  HttpApi.add(
+    HttpApi.get("list", "/todos").pipe(
+      HttpApi.setSuccess(Schema.Array(TodoSchema))
+    )
+  )
 ) {}
 
-// Create client
-const rpcClient = createRpcClient(MyRpcClient, MyRpc, {
-  url: 'http://localhost:3000/rpc',
-  runtime
-})
-
 // Use in component
-function User() {
-  const [userId] = createSignal('1')
-  
-  const query = createRpcQuery(
-    MyRpcClient,
+function TodoList() {
+  const query = makeHttpApiQuery(
+    TodosApi,
     runtime,
-    "getUser",
-    () => ({
-      queryKey: ['user', userId()],
-      payload: { id: userId() }
-    })
-  )
-  
-  return <div>{query.data?.name}</div>
+    "list",
+    () => ({ queryKey: ["todos"] })
+  );
+
+  return <div>{/* render todos */}</div>;
 }
 ```
 
-## Development
+## 🛠️ Development
+
+This project uses pnpm workspaces for managing the monorepo.
 
 ```bash
+# Clone the repository
+git clone https://github.com/Frank-III/solid-effect-query.git
+cd solid-effect-query
+
 # Install dependencies
 pnpm install
-
-# Run demo app
-pnpm dev
 
 # Build all packages
 pnpm build
 
-# Type check
+# Run the demo application
+pnpm dev --filter=demo-app
+
+# Run tests
+pnpm test
+
+# Type checking
 pnpm typecheck
+
+# Linting
+pnpm lint
 ```
 
-## Demo App
+### Project Structure
 
-Check out the `examples/demo-app` folder for a complete example demonstrating all three packages.
+```
+solid-effect-query/
+├── packages/
+│   ├── solid-effect-query/           # Core package
+│   ├── solid-effect-query-http-api/  # HTTP API integration
+│   └── solid-effect-query-rpc/       # RPC integration
+├── examples/
+│   └── demo-app/                     # Demo application
+└── docs/                              # Documentation
+```
 
-## Features
+## 🤝 Contributing
 
-- ✅ Full Effect integration with TanStack Query
-- ✅ Type-safe HttpApi client
-- ✅ RPC support with automatic batching
-- ✅ SolidJS reactive patterns
-- ✅ Tree-shakeable packages
-- ✅ TypeScript first
-- ✅ Proper error handling with Effect's Cause
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+Please make sure to:
+- Update tests as appropriate
+- Update documentation
+- Follow the existing code style
+- Add changeset for version management
+
+## 📄 License
+
+MIT © [Frank Wang](https://github.com/Frank-III)
+
+## 🙏 Acknowledgments
+
+- [Effect](https://effect.website/) - The standard library for TypeScript
+- [TanStack Query](https://tanstack.com/query) - Powerful asynchronous state management
+- [SolidJS](https://www.solidjs.com/) - A declarative, efficient, and flexible JavaScript library
+- [effect-react-query](https://github.com/jessekelly881/effect-react-query) - Inspiration for this SolidJS version
+
+## 🔗 Links
+
+- [GitHub Repository](https://github.com/Frank-III/solid-effect-query)
+- [NPM Package - Core](https://www.npmjs.com/package/solid-effect-query)
+- [NPM Package - HTTP API](https://www.npmjs.com/package/solid-effect-query-http-api)
+- [NPM Package - RPC](https://www.npmjs.com/package/solid-effect-query-rpc)
+- [Effect Documentation](https://effect.website/docs)
+- [TanStack Query Documentation](https://tanstack.com/query/latest)
